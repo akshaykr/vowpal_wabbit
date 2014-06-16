@@ -130,7 +130,8 @@ flat_example* flatten_example(vw& all, example *ec)
 	fec->example_counter = ec->example_counter;  
 	fec->ft_offset = ec->ft_offset;  
 	fec->num_features = ec->num_features;  
-    
+	fec->total_sum_feat_sq = ec->total_sum_feat_sq;
+
 	features_and_source fs;
 	fs.base = all.reg.weight_vector;
 	fs.stride_shift = all.reg.stride_shift;

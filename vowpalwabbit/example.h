@@ -75,6 +75,7 @@ struct flat_example
 	size_t example_counter;  
 	uint32_t ft_offset;  
 	float global_weight;
+        float total_sum_feat_sq;
 
 	size_t num_features;//precomputed, cause it's fast&easy.  
 	size_t feature_map_len;

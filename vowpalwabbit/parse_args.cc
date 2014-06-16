@@ -16,6 +16,7 @@ license as described in the file LICENSE.
 #include "network.h"
 #include "global_data.h"
 #include "nn.h"
+#include "kernel_svm.h"
 #include "cbify.h"
 #include "oaa.h"
 #include "rand48.h"
@@ -696,6 +697,7 @@ void parse_scorer_reductions(vw& all, po::variables_map& vm)
 
   score_mod_opt.add_options()
     ("nn", po::value<size_t>(), "Use sigmoidal feedforward network with <k> hidden units")
+    ("ksvm", "Use kernel SVM")
     ("new_mf", "use new, reduction-based matrix factorization")
     ("autolink", po::value<size_t>(), "create link function with polynomial d")
     ("lrq", po::value<vector<string> > (), "use low rank quadratic features")
@@ -707,6 +709,9 @@ void parse_scorer_reductions(vw& all, po::variables_map& vm)
   if(vm.count("nn"))
     all.l = NN::setup(all, vm);
   
+  if (vm.count("ksvm"))
+    all.l = KSVM::setup(all, vm);
+
   if (vm.count("new_mf") && all.rank > 0)
     all.l = MF::setup(all, vm);
   
@@ -718,6 +723,8 @@ void parse_scorer_reductions(vw& all, po::variables_map& vm)
 
   if (vm.count("stage_poly"))
     all.l = StagewisePoly::setup(all, vm);
+
+
   
   all.l = Scorer::setup(all, vm);
 }

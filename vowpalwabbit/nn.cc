@@ -311,6 +311,10 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
     po::options_description nn_opts("NN options");
     nn_opts.add_options()
+      ("pool_greedy", "use greedy selection on mini pools")
+      ("para_active", "do parallel active learning")
+      ("pool_size", po::value<size_t>(), "size of pools for active learning")
+      ("subsample", po::value<size_t>(), "number of items to subsample from the pool")
       ("inpass", "Train or test sigmoidal feedforward network with input passthrough.")
       ("dropout", "Train or test sigmoidal feedforward network using dropout.")
       ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
@@ -323,6 +327,17 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     std::stringstream ss;
     ss << " --nn " << n->k;
     all.file_options.append(ss.str());
+
+    n->active = all.active_simulation;
+    if (n->active) {
+      if (vm.count("pool_greedy"))
+	n->active_pool_greedy = 1;
+      if (vm.count("para_active"))
+	n->para_active = 1;
+      n->numqueries = 0;
+      if (n->para_active)
+	n->current_t = 0;
+    }
 
     if ( vm.count("dropout") ) {
       n->dropout = true;
