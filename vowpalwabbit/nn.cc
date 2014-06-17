@@ -34,6 +34,24 @@ namespace NN {
     bool inpass;
     bool finished_setup;
 
+    // active flags
+    bool active;
+    bool active_pool_greedy;
+    bool para_active;
+
+    // pool maintainence
+    size_t pool_size;
+    size_t pool_pos;
+    size_t subsample;
+    example** pool;
+    size_t numqueries;
+    size_t local_begin, local_end;
+    float current_t;
+    int save_interval;
+
+    // para-active state
+    size_t total; //total number of nodes
+
     vw* all;
   };
 
@@ -95,11 +113,12 @@ namespace NN {
       n.xsubi = n.save_xsubi;
   }
 
+  //template <bool is_learn>
+  //  void predict_or_learn(nn& n, learner& base, example& ec)
   template <bool is_learn>
-  void predict_or_learn(nn& n, learner& base, example& ec)
+  void passive_predict_or_learn(nn& n, learner& base, example& ec)
   {
     bool shouldOutput = n.all->raw_prediction > 0;
-
     if (! n.finished_setup)
       finish_setup (n, *(n.all));
 
@@ -192,7 +211,6 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       // TODO: this is not correct if there is something in the 
       // nn_output_namespace but at least it will not leak memory
       // in that case
-
       ec.indices.push_back (nn_output_namespace);
       v_array<feature> save_nn_output_namespace = ec.atomics[nn_output_namespace];
       ec.atomics[nn_output_namespace] = n.output_layer.atomics[nn_output_namespace];
@@ -289,6 +307,87 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     ec.loss = save_ec_loss;
   }
 
+
+  template <bool is_learn>
+  void active_predict_or_learn(nn& n, learner& base, example& ec)
+  {
+    passive_predict_or_learn<false>(n, base, ec);
+
+    if (is_learn) {
+      // Just add this example to the pool.
+      n.pool[n.pool_pos++] = &ec;
+
+      if (n.pool_pos == n.pool_size) {
+	// Then we have to actually subsample and learn on the pool.
+	float* gradients = (float*)calloc_or_die(n.pool_pos, sizeof(float));
+	bool* train_pool = (bool*)calloc_or_die(n.pool_size, sizeof(bool));
+	size_t* local_pos = (size_t*)calloc_or_die(n.pool_pos, sizeof(size_t));
+
+	float gradsum = 0;
+	for(size_t idx = 0; idx < n.pool_pos; idx++) {
+	  example* ec = n.pool[idx];
+	  train_pool[idx] = false;
+	  gradients[idx] = fabs(n.all->loss->first_derivative(n.all->sd, ec->partial_prediction, ((label_data*)ec->ld)->label));
+	  gradsum += gradients[idx];
+	  ec->loss = n.all->loss->getLoss(n.all->sd, ec->partial_prediction, ((label_data*)ec->ld)->label);
+	}
+
+	multimap<float, int, std::greater<float> > scoremap;
+	for(int i = 0; i < n.pool_pos; i++) 
+	  scoremap.insert(pair<const float, const int>(gradients[i], i));
+
+	multimap<float, int, std::greater<float> >::iterator iter = scoremap.begin();
+	float* queryp = (float*) calloc(n.pool_pos, sizeof(float));
+	float querysum = 0;
+
+	for (int i = 0; i < n.pool_pos; i++) {
+	  queryp[i] = min<float>(gradients[i]/gradsum*(float)n.subsample, 1.0);
+	  querysum += queryp[i];
+	}
+	float residual = n.subsample - querysum;
+
+	for (int pos = 0; iter != scoremap.end() && residual > 0; iter++, pos++) {
+	  if (pos == n.pool_pos)
+	    cerr << "Problem: n.pool_pos == pos"<<endl;
+	  if (queryp[iter->second] + residual/(n.pool_pos - pos) <= 1) {
+	    queryp[iter->second] += residual/(n.pool_pos - pos);
+	    residual -= residual/(n.pool_pos - pos);
+	  } else {
+	    residual -= (1 - queryp[iter->second]);
+	    queryp[iter->second] = 1;
+	  }
+	}
+
+	int num_train = 0;
+	float label_avg = 0, weight_sum = 0;
+	for (int i = 0; i < n.pool_pos && num_train < n.subsample + 1; i++)
+	  if (frand48() < queryp[i]) {
+	    train_pool[i] = true;
+	    label_data* ld = (label_data*) n.pool[i]->ld;
+	    ld->weight = 1/queryp[i]/n.pool_size;
+	    local_pos[num_train] = i;
+	    n.numqueries++;
+	    num_train++;
+	    label_avg += ((label_data*) n.pool[i]->ld)->weight * ((label_data*) n.pool[i]->ld)->label;
+	    weight_sum += ((label_data*) n.pool[i]->ld)->weight;
+	  }
+	free(queryp);
+
+	for (int i = 0; i < n.pool_pos; i++) {
+	  if (!train_pool[i])
+	    continue;
+
+	  example* ec = n.pool[i];
+	  passive_predict_or_learn<is_learn>(n, base, *ec);
+	}
+	n.pool_pos = 0;
+	free (local_pos);
+	free (train_pool);
+	free (gradients);
+      }
+    }
+  }
+
   void finish_example(vw& all, nn&, example& ec)
   {
     int save_raw_prediction = all.raw_prediction;
@@ -299,6 +398,9 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
   void finish(nn& n)
   {
+    if (n.active)
+      cerr<<"Number of label queries = "<<n.numqueries<<endl;
+
     delete n.squared_loss;
     free (n.output_layer.indices.begin);
     free (n.output_layer.atomics[nn_output_namespace].begin);
@@ -338,6 +440,24 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       if (n->para_active)
 	n->current_t = 0;
     }
+
+    if (vm.count("pool_size"))
+      n->pool_size = vm["pool_size"].as<std::size_t>();
+    else
+      n->pool_size = 1;
+
+    n->pool = (example**)calloc_or_die(n->pool_size, sizeof(example*));
+    n->pool_pos = 0;
+
+    if (vm.count("subsample"))
+      n->subsample = vm["subsample"].as<std::size_t>();
+    else if (n->para_active)
+      n->subsample = ceil(n->pool_size / n->total);
+    else
+      n->subsample = 1;
+    cerr<<"Subsample = "<<n->subsample<<endl;
+      
+      
 
     if ( vm.count("dropout") ) {
       n->dropout = true;
@@ -385,8 +505,13 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     n->save_xsubi = n->xsubi;
     n->increment = all.l->increment;//Indexing of output layer is odd.
     learner* l = new learner(n,  all.l, n->k+1);
-    l->set_learn<nn, predict_or_learn<true> >();
-    l->set_predict<nn, predict_or_learn<false> >();
+    if (n->active) {
+      l->set_learn<nn, active_predict_or_learn<true> >();
+      l->set_predict<nn, active_predict_or_learn<false> >();
+    } else {
+      l->set_learn<nn, passive_predict_or_learn<true> >();
+      l->set_predict<nn, passive_predict_or_learn<false> >();
+    }
     l->set_finish<nn, finish>();
     l->set_finish_example<nn, finish_example>();
     l->set_end_pass<nn,end_pass>();
