@@ -23,6 +23,7 @@ Implementation by Miro Dudik.
 #include "vw.h"
 #include "gd.h"
 #include "reductions.h"
+#include "bfgs.h"
 
 using namespace std;
 using namespace LEARNER;
@@ -38,10 +39,6 @@ using namespace LEARNER;
 #define W_GT 1
 #define W_DIR 2
 #define W_COND 3
-
-#define LEARN_OK 0
-#define LEARN_CURV 1
-#define LEARN_CONV 2
 
 class curv_exception: public exception {} curv_ex;
 
@@ -60,48 +57,6 @@ namespace BFGS
 
 {
   const float max_precond_ratio = 100.f;
-
-  struct bfgs {
-    vw* all;
-    double wolfe1_bound;
-    
-    size_t final_pass;
-    struct timeb t_start, t_end;
-    double net_comm_time;
-    
-    struct timeb t_start_global, t_end_global;
-    double net_time;
-    
-    v_array<float> predictions;
-    size_t example_number;
-    size_t current_pass;
-    size_t no_win_counter;
-    size_t early_stop_thres;
-    
-    // default transition behavior
-    bool first_hessian_on;
-    bool backstep_on;
-    
-    // set by initializer
-    int mem_stride;
-    bool output_regularizer;
-    float* mem;
-    double* rho;
-    double* alpha;
-    
-    weight* regularizers;
-    // the below needs to be included when resetting, in addition to preconditioner and derivative
-    int lastj, origin;
-    double loss_sum, previous_loss_sum;
-    float step_size;
-    double importance_weight_sum;
-    double curvature;
-    
-    // first pass specification
-    bool first_pass;
-    bool gradient_pass;
-    bool preconditioner_pass;
-  };
 
 const char* curv_message = "Zero or negative curvature detected.\n"
       "To increase curvature you can increase regularization or rescale features.\n"
@@ -135,6 +90,7 @@ void reset_state(vw& all, bfgs& b, bool zero)
   b.first_pass = true;
   b.gradient_pass = true;
   b.preconditioner_pass = true;
+  b.current_pass = 0;
   if (zero)
     {
       zero_derivative(all);
@@ -530,11 +486,12 @@ void update_weight(vw& all, float step_size, size_t current_pass)
 
 int process_pass(vw& all, bfgs& b) {
   int status = LEARN_OK;
-
+  
   /********************************************************************/
   /* A) FIRST PASS FINISHED: INITIALIZE FIRST LINE SEARCH *************/
   /********************************************************************/ 
     if (b.first_pass) {
+      cerr << "first pass" << endl;
       if(all.span_server != "")
 	{
 	  accumulate(all, all.span_server, all.reg, W_COND); //Accumulate preconditioner
@@ -549,9 +506,10 @@ int process_pass(vw& all, bfgs& b) {
       }
       if (all.l2_lambda > 0.)
 	b.loss_sum += add_regularization(all, b, all.l2_lambda);
-      if (!all.quiet)
+      if (!all.quiet) {
 	fprintf(stderr, "%2lu %-10.5f\t", (long unsigned int)b.current_pass+1, b.loss_sum / b.importance_weight_sum);
-      
+	//fprintf(stderr, "%2lu %-10.5f\t", (long unsigned int)b.current_pass+1, b.loss_sum);
+      }
       b.previous_loss_sum = b.loss_sum;
       b.loss_sum = 0.;
       b.example_number = 0;
@@ -571,11 +529,13 @@ int process_pass(vw& all, bfgs& b) {
 	update_weight(all, b.step_size, b.current_pass);		     		           }
     }
     else
+      cerr << "Not first pass" << endl;
   /********************************************************************/
   /* B) GRADIENT CALCULATED *******************************************/
   /********************************************************************/ 
 	      if (b.gradient_pass) // We just finished computing all gradients
 		{
+		  cerr << "Gradient pass" << endl;
 		  if(all.span_server != "") {
 		    float t = (float)b.loss_sum;
 		    b.loss_sum = accumulate_scalar(all, all.span_server, t);  //Accumulate loss_sums
@@ -613,18 +573,19 @@ int process_pass(vw& all, bfgs& b) {
   /********************************************************************/ 
 		  else if (b.backstep_on && (wolfe1<b.wolfe1_bound || b.loss_sum > b.previous_loss_sum))
 		    {// curvature violated, or we stepped too far last time: step back
+		      cerr << "Line search failed" << endl;
 		      ftime(&b.t_end_global);
 		      b.net_time = (int) (1000.0 * (b.t_end_global.time - b.t_start_global.time) + (b.t_end_global.millitm - b.t_start_global.millitm)); 
 		      float ratio = (b.step_size==0.f) ? 0.f : (float)new_step/(float)b.step_size;
-		      if (!all.quiet)
-			fprintf(stderr, "%-10s\t%-10s\t(revise x %.1f)\t%-10.5f\n",
-				"","",ratio,
-				new_step);
-			b.predictions.erase();
-			update_weight(all, (float)(-b.step_size+new_step), b.current_pass);		     		      			
-			b.step_size = (float)new_step;
-			zero_derivative(all);
-			b.loss_sum = 0.;
+		      //if (!all.quiet)
+			//fprintf(stderr, "%-10s\t%-10s\t(revise x %.1f)\t%-10.5f\n",
+			//"","",ratio,
+			//new_step);
+		      b.predictions.erase();
+		      update_weight(all, (float)(-b.step_size+new_step), b.current_pass);		     		      			
+		      b.step_size = (float)new_step;
+		      zero_derivative(all);
+		      b.loss_sum = 0.;
 		    }
 
   /********************************************************************/
@@ -632,6 +593,7 @@ int process_pass(vw& all, bfgs& b) {
   /*     DETERMINE NEXT SEARCH DIRECTION             ******************/
   /********************************************************************/ 
 		  else {
+		    cerr << "Line search succesful or disabled" << endl;
 		      double rel_decrease = (b.previous_loss_sum-b.loss_sum)/b.previous_loss_sum;
 		      if (!nanpattern((float)rel_decrease) && b.backstep_on && fabs(rel_decrease)<all.rel_threshold) {
 			fprintf(stdout, "\nTermination condition reached in pass %ld: decrease in loss less than %.3f%%.\n"
@@ -673,6 +635,7 @@ int process_pass(vw& all, bfgs& b) {
   /********************************************************************/ 
 	      else // just finished all second gradients
 		{
+		  cerr << "Curvature calculated, not gradient pass" << endl;
 		  if(all.span_server != "") {
 		    float t = (float)b.curvature;
 		    b.curvature = accumulate_scalar(all, all.span_server, t);  //Accumulate curvatures
@@ -726,9 +689,9 @@ int process_pass(vw& all, bfgs& b) {
 void process_example(vw& all, bfgs& b, example& ec)
  {
   label_data* ld = (label_data*)ec.ld;
-  if (b.first_pass)
+  if (b.first_pass) {
     b.importance_weight_sum += ld->weight;
-  
+  }
   /********************************************************************/
   /* I) GRADIENT CALCULATION ******************************************/
   /********************************************************************/ 
@@ -827,7 +790,6 @@ void learn(bfgs& b, learner& base, example& ec)
 {
   vw* all = b.all;
   assert(ec.in_use);
-
   if (b.current_pass <= b.final_pass)
     {
       if(ec.test_only)

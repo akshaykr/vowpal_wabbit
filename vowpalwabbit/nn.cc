@@ -13,9 +13,11 @@ license as described in the file LICENSE.
 #include "simple_label.h"
 #include "rand48.h"
 #include "gd.h"
+#include "bfgs.h"
 
 using namespace std;
 using namespace LEARNER;
+using namespace BFGS;
 
 namespace NN {
   const float hidden_min_activation = -3;
@@ -38,6 +40,7 @@ namespace NN {
     bool active;
     bool active_pool_greedy;
     bool para_active;
+    bool active_bfgs;
 
     // pool maintainence
     size_t pool_size;
@@ -113,8 +116,6 @@ namespace NN {
       n.xsubi = n.save_xsubi;
   }
 
-  //template <bool is_learn>
-  //  void predict_or_learn(nn& n, learner& base, example& ec)
   template <bool is_learn>
   void passive_predict_or_learn(nn& n, learner& base, example& ec)
   {
@@ -206,7 +207,6 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
               w[n.all->normalized_idx] = 1e-4f;
           }
       }
-
     if (n.inpass) {
       // TODO: this is not correct if there is something in the 
       // nn_output_namespace but at least it will not leak memory
@@ -307,6 +307,36 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     ec.loss = save_ec_loss;
   }
 
+  void active_bfgs(nn& n, learner& base, example** ec_arr, int num_train) {
+    // assert base learner is doing bfgs
+    cerr << "Starting BFGS on "<<num_train<<" examples"<<endl;
+    BFGS::bfgs* b = (BFGS::bfgs*) base.learn_fd.data;
+    BFGS::reset_state(*(n.all), *b, false);
+    b->regularizers = n.all->reg.weight_vector;
+
+    for (int iters = 0; iters < n.all->numpasses; iters++) {
+      for (int i = 0; i < num_train; i++)
+	passive_predict_or_learn<true>(n, base, *ec_arr[i]);
+
+      int status = BFGS::process_pass(*(n.all), *b);
+      cerr << endl;
+      if (status != 0) {
+	// then we are done iterating.
+	cerr << "Early termination of bfgs updates"<<endl;
+	return;
+      }
+    }
+  }
+
+  void active_update_model(nn& n, learner& base, example** ec_arr, int num_train) {
+    if (n.active_bfgs)
+      active_bfgs(n, base, ec_arr, num_train);
+    else
+      for (int i = 0; i < num_train; i++) {
+	passive_predict_or_learn<true>(n, base, *(ec_arr[i]));
+      }
+  }
+
 
   template <bool is_learn>
   void active_predict_or_learn(nn& n, learner& base, example& ec)
@@ -344,6 +374,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	  queryp[i] = min<float>(gradients[i]/gradsum*(float)n.subsample, 1.0);
 	  querysum += queryp[i];
 	}
+
 	float residual = n.subsample - querysum;
 
 	for (int pos = 0; iter != scoremap.end() && residual > 0; iter++, pos++) {
@@ -373,13 +404,17 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	  }
 	free(queryp);
 
+	example** ec_arr = (example**) calloc_or_die(num_train, sizeof(example*));
+	int idx = 0;
 	for (int i = 0; i < n.pool_pos; i++) {
 	  if (!train_pool[i])
 	    continue;
-
-	  example* ec = n.pool[i];
-	  passive_predict_or_learn<is_learn>(n, base, *ec);
+	  ec_arr[idx++] = n.pool[i];
+	  //example* ec = n.pool[i];
+	  //passive_predict_or_learn<is_learn>(n, base, *ec);
 	}
+	active_update_model(n, base, ec_arr, num_train);
+
 	n.pool_pos = 0;
 	free (local_pos);
 	free (train_pool);
@@ -417,6 +452,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       ("para_active", "do parallel active learning")
       ("pool_size", po::value<size_t>(), "size of pools for active learning")
       ("subsample", po::value<size_t>(), "number of items to subsample from the pool")
+      ("active_bfgs", "do batch bfgs optimization on active pools")
       ("inpass", "Train or test sigmoidal feedforward network with input passthrough.")
       ("dropout", "Train or test sigmoidal feedforward network using dropout.")
       ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
@@ -440,6 +476,9 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       if (n->para_active)
 	n->current_t = 0;
     }
+
+    if (vm.count("active_bfgs"))
+      n->active_bfgs = 1;
 
     if (vm.count("pool_size"))
       n->pool_size = vm["pool_size"].as<std::size_t>();
@@ -504,7 +543,8 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
     n->save_xsubi = n->xsubi;
     n->increment = all.l->increment;//Indexing of output layer is odd.
-    learner* l = new learner(n,  all.l, n->k+1);
+
+    learner* l = new learner(n, all.l, n->k+1);
     if (n->active) {
       l->set_learn<nn, active_predict_or_learn<true> >();
       l->set_predict<nn, active_predict_or_learn<false> >();
@@ -515,7 +555,6 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     l->set_finish<nn, finish>();
     l->set_finish_example<nn, finish_example>();
     l->set_end_pass<nn,end_pass>();
-
     return l;
   }
 }

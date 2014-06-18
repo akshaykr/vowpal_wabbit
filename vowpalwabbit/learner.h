@@ -91,7 +91,6 @@ namespace LEARNER
 struct learner {
 private:
   func_data init_fd;
-  learn_data learn_fd;
   finish_example_data finish_example_fd;
   save_load_data save_load_fd;
   func_data end_pass_fd;
@@ -99,6 +98,7 @@ private:
   func_data finisher_fd;
   
 public:
+  learn_data learn_fd;
   size_t weights; //this stores the number of "weight vectors" required by the learner.
   size_t increment;
 
