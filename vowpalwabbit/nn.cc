@@ -41,6 +41,8 @@ namespace NN {
     bool active_pool_greedy;
     bool para_active;
     bool active_bfgs;
+    size_t active_passes;
+    float active_reg_base; // initial regularization -- this is kind of hacky right now.
 
     // pool maintainence
     size_t pool_size;
@@ -311,21 +313,22 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     // assert base learner is doing bfgs
     cerr << "Starting BFGS on "<<num_train<<" examples"<<endl;
     BFGS::bfgs* b = (BFGS::bfgs*) base.learn_fd.data;
-    BFGS::reset_state(*(n.all), *b, false);
-    b->regularizers = n.all->reg.weight_vector;
-
-    for (int iters = 0; iters < n.all->numpasses; iters++) {
+    BFGS::reset_state(*(n.all), *b, true);
+    b->backstep_on = false;
+    for (size_t iters = 0; iters < n.active_passes; iters++) {
       for (int i = 0; i < num_train; i++)
 	passive_predict_or_learn<true>(n, base, *ec_arr[i]);
 
       int status = BFGS::process_pass(*(n.all), *b);
-      cerr << endl;
       if (status != 0) {
 	// then we are done iterating.
 	cerr << "Early termination of bfgs updates"<<endl;
-	return;
+	break;
       }
     }
+    b->regularizers = n.all->reg.weight_vector;
+    n.all->l2_lambda += n.active_reg_base; // scale regularizer linearly.
+    cerr << endl;
   }
 
   void active_update_model(nn& n, learner& base, example** ec_arr, int num_train) {
@@ -452,7 +455,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       ("para_active", "do parallel active learning")
       ("pool_size", po::value<size_t>(), "size of pools for active learning")
       ("subsample", po::value<size_t>(), "number of items to subsample from the pool")
-      ("active_bfgs", "do batch bfgs optimization on active pools")
+      ("active_bfgs", po::value<size_t>(), "do batch bfgs optimization on active pools")
       ("inpass", "Train or test sigmoidal feedforward network with input passthrough.")
       ("dropout", "Train or test sigmoidal feedforward network using dropout.")
       ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
@@ -477,8 +480,10 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	n->current_t = 0;
     }
 
-    if (vm.count("active_bfgs"))
+    if (vm.count("active_bfgs")) {
       n->active_bfgs = 1;
+      n->active_passes = vm["active_bfgs"].as<std::size_t>();
+    }
 
     if (vm.count("pool_size"))
       n->pool_size = vm["pool_size"].as<std::size_t>();
@@ -543,6 +548,9 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
     n->save_xsubi = n->xsubi;
     n->increment = all.l->increment;//Indexing of output layer is odd.
+
+    if (all.l2_lambda != 0)
+      n->active_reg_base = all.l2_lambda;
 
     learner* l = new learner(n, all.l, n->k+1);
     if (n->active) {

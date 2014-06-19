@@ -63,6 +63,20 @@ const char* curv_message = "Zero or negative curvature detected.\n"
       "It is also possible that you have reached numerical accuracy\n"
       "and further decrease in the objective cannot be reliably detected.\n";
 
+void zero_state(vw& all)
+{
+  uint32_t length = 1 << all.num_bits;
+  size_t stride = 1 << all.reg.stride_shift;
+  weight* weights = all.reg.weight_vector;
+  for(uint32_t i = 0; i < length; i++) 
+    {
+      //weights[stride*i+W_XT] = 0;
+      weights[stride*i+W_GT] = 0;
+      weights[stride*i+W_DIR] = 0;
+      weights[stride*i+W_COND] = 0;
+    }
+}
+
 void zero_derivative(vw& all)
 {//set derivative to 0.
   uint32_t length = 1 << all.num_bits;
@@ -95,6 +109,7 @@ void reset_state(vw& all, bfgs& b, bool zero)
     {
       zero_derivative(all);
       zero_preconditioner(all);
+      zero_state(all);
     }
 }
 
@@ -449,19 +464,6 @@ void preconditioner_to_regularizer(vw& all, bfgs& b, float regularization)
       b.regularizers[2*i+1] = weights[stride*i];
 }
 
-void zero_state(vw& all)
-{
-  uint32_t length = 1 << all.num_bits;
-  size_t stride = 1 << all.reg.stride_shift;
-  weight* weights = all.reg.weight_vector;
-  for(uint32_t i = 0; i < length; i++) 
-    {
-      weights[stride*i+W_GT] = 0;
-      weights[stride*i+W_DIR] = 0;
-      weights[stride*i+W_COND] = 0;
-    }
-}
-
 double derivative_in_direction(vw& all, bfgs& b, float* mem, int &origin)
   {  
   double ret = 0.;
@@ -486,12 +488,11 @@ void update_weight(vw& all, float step_size, size_t current_pass)
 
 int process_pass(vw& all, bfgs& b) {
   int status = LEARN_OK;
-  
+
   /********************************************************************/
   /* A) FIRST PASS FINISHED: INITIALIZE FIRST LINE SEARCH *************/
   /********************************************************************/ 
     if (b.first_pass) {
-      cerr << "first pass" << endl;
       if(all.span_server != "")
 	{
 	  accumulate(all, all.span_server, all.reg, W_COND); //Accumulate preconditioner
@@ -524,18 +525,17 @@ int process_pass(vw& all, bfgs& b) {
 	ftime(&b.t_end_global);
 	b.net_time = (int) (1000.0 * (b.t_end_global.time - b.t_start_global.time) + (b.t_end_global.millitm - b.t_start_global.millitm)); 
 	if (!all.quiet)
-	  fprintf(stderr, "%-10s\t%-10.5f\t%-10.5f\n", "", d_mag, b.step_size);
+	  fprintf(stderr, "%-10s\t%-10.5f\t%-10.5f", "", d_mag, b.step_size);
 	b.predictions.erase();
-	update_weight(all, b.step_size, b.current_pass);		     		           }
+	update_weight(all, b.step_size, b.current_pass);
+      }
     }
-    else
-      cerr << "Not first pass" << endl;
+    else {
   /********************************************************************/
   /* B) GRADIENT CALCULATED *******************************************/
   /********************************************************************/ 
 	      if (b.gradient_pass) // We just finished computing all gradients
 		{
-		  cerr << "Gradient pass" << endl;
 		  if(all.span_server != "") {
 		    float t = (float)b.loss_sum;
 		    b.loss_sum = accumulate_scalar(all, all.span_server, t);  //Accumulate loss_sums
@@ -573,14 +573,14 @@ int process_pass(vw& all, bfgs& b) {
   /********************************************************************/ 
 		  else if (b.backstep_on && (wolfe1<b.wolfe1_bound || b.loss_sum > b.previous_loss_sum))
 		    {// curvature violated, or we stepped too far last time: step back
-		      cerr << "Line search failed" << endl;
 		      ftime(&b.t_end_global);
 		      b.net_time = (int) (1000.0 * (b.t_end_global.time - b.t_start_global.time) + (b.t_end_global.millitm - b.t_start_global.millitm)); 
 		      float ratio = (b.step_size==0.f) ? 0.f : (float)new_step/(float)b.step_size;
-		      //if (!all.quiet)
-			//fprintf(stderr, "%-10s\t%-10s\t(revise x %.1f)\t%-10.5f\n",
-			//"","",ratio,
-			//new_step);
+		      if (!all.quiet) {
+			fprintf(stderr, "%-10s\t%-10s\t(revise x %.1f)\t%-10.5f\n",
+				"","",ratio,
+				new_step);
+		      }
 		      b.predictions.erase();
 		      update_weight(all, (float)(-b.step_size+new_step), b.current_pass);		     		      			
 		      b.step_size = (float)new_step;
@@ -593,7 +593,6 @@ int process_pass(vw& all, bfgs& b) {
   /*     DETERMINE NEXT SEARCH DIRECTION             ******************/
   /********************************************************************/ 
 		  else {
-		    cerr << "Line search succesful or disabled" << endl;
 		      double rel_decrease = (b.previous_loss_sum-b.loss_sum)/b.previous_loss_sum;
 		      if (!nanpattern((float)rel_decrease) && b.backstep_on && fabs(rel_decrease)<all.rel_threshold) {
 			fprintf(stdout, "\nTermination condition reached in pass %ld: decrease in loss less than %.3f%%.\n"
@@ -623,8 +622,9 @@ int process_pass(vw& all, bfgs& b) {
 			ftime(&b.t_end_global);
 			b.net_time = (int) (1000.0 * (b.t_end_global.time - b.t_start_global.time) + (b.t_end_global.millitm - b.t_start_global.millitm)); 
 			if (!all.quiet)
-			  fprintf(stderr, "%-10s\t%-10.5f\t%-10.5f\n", "", d_mag, b.step_size);
+			  fprintf(stderr, "%-10s\t%-10.5f\t%-10.5f", "", d_mag, b.step_size);
 			b.predictions.erase();
+			//if (status != LEARN_CURV)
 			update_weight(all, b.step_size, b.current_pass);		     		      
 		      }
 		    }
@@ -635,7 +635,6 @@ int process_pass(vw& all, bfgs& b) {
   /********************************************************************/ 
 	      else // just finished all second gradients
 		{
-		  cerr << "Curvature calculated, not gradient pass" << endl;
 		  if(all.span_server != "") {
 		    float t = (float)b.curvature;
 		    b.curvature = accumulate_scalar(all, all.span_server, t);  //Accumulate curvatures
@@ -667,7 +666,8 @@ int process_pass(vw& all, bfgs& b) {
 		  if (!all.quiet)
 		    fprintf(stderr, "%-10.5f\t%-10.5f\t%-10.5f\n", b.curvature / b.importance_weight_sum, d_mag, b.step_size);
 		  b.gradient_pass = true;
-		}//now start computing derivatives.    
+		}//now start computing derivatives.
+    }
     b.current_pass++;
     b.first_pass = false;
     b.preconditioner_pass = false;
@@ -976,11 +976,15 @@ learner* setup(vw& all, po::variables_map& vm)
     else
       cerr << "**without** curvature calculation" << endl;
   }
+  if (all.numpasses == 1)
+    b->final_pass = 1000;
+  /*
   if (all.numpasses < 2)
     {
       cout << "you must make at least 2 passes to use BFGS" << endl;
       throw exception();
     }
+  */
 
   all.bfgs = true;
   all.reg.stride_shift = 2;
