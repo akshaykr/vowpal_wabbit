@@ -192,7 +192,6 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
         float sigmah = 
           (dropped_out[i]) ? 0.0f : dropscale * fasttanh (hidden_units[i]);
         n.output_layer.atomics[nn_output_namespace][i].x = sigmah;
-
         n.output_layer.total_sum_feat_sq += sigmah * sigmah;
         n.output_layer.sum_feat_sq[nn_output_namespace] += sigmah * sigmah;
 
@@ -310,24 +309,26 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
   }
 
   void active_bfgs(nn& n, learner& base, example** ec_arr, int num_train) {
-    // assert base learner is doing bfgs
-    cerr << "Starting BFGS on "<<num_train<<" examples"<<endl;
+    //cerr << "Starting BFGS on "<<num_train<<" examples"<<endl;
     BFGS::bfgs* b = (BFGS::bfgs*) base.learn_fd.data;
     BFGS::reset_state(*(n.all), *b, true);
     b->backstep_on = false;
     for (size_t iters = 0; iters < n.active_passes; iters++) {
       for (int i = 0; i < num_train; i++)
-	passive_predict_or_learn<true>(n, base, *ec_arr[i]);
+	passive_predict_or_learn<true>(n, base, *(ec_arr[i]));
 
+      //bool save_quiet = n.all->quiet;
+      //n.all->quiet = true;
+      b->regularizers = n.all->reg.weight_vector;
       int status = BFGS::process_pass(*(n.all), *b);
+      n.all->l2_lambda += n.active_reg_base; // scale regularizer linearly.
+      //n.all->quiet = save_quiet;
       if (status != 0) {
 	// then we are done iterating.
-	cerr << "Early termination of bfgs updates"<<endl;
+	//cerr << "Early termination of bfgs updates"<<endl;
 	break;
       }
     }
-    b->regularizers = n.all->reg.weight_vector;
-    n.all->l2_lambda += n.active_reg_base; // scale regularizer linearly.
     cerr << endl;
   }
 
@@ -348,7 +349,10 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
     if (is_learn) {
       // Just add this example to the pool.
-      n.pool[n.pool_pos++] = &ec;
+      example* ec_cpy = (example*) calloc_or_die(1, sizeof(example));
+      ec_cpy->ld = calloc_or_die(1, sizeof(label_data));
+      VW::copy_example_data(false, ec_cpy, &ec, sizeof(label_data), NULL);
+      n.pool[n.pool_pos++] = ec_cpy;
 
       if (n.pool_pos == n.pool_size) {
 	// Then we have to actually subsample and learn on the pool.
@@ -358,11 +362,11 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
 	float gradsum = 0;
 	for(size_t idx = 0; idx < n.pool_pos; idx++) {
-	  example* ec = n.pool[idx];
+	  example* ex = n.pool[idx];
 	  train_pool[idx] = false;
-	  gradients[idx] = fabs(n.all->loss->first_derivative(n.all->sd, ec->partial_prediction, ((label_data*)ec->ld)->label));
+	  gradients[idx] = fabs(n.all->loss->first_derivative(n.all->sd, ex->partial_prediction, ((label_data*)ex->ld)->label));
 	  gradsum += gradients[idx];
-	  ec->loss = n.all->loss->getLoss(n.all->sd, ec->partial_prediction, ((label_data*)ec->ld)->label);
+	  ex->loss = n.all->loss->getLoss(n.all->sd, ex->partial_prediction, ((label_data*)ex->ld)->label);
 	}
 
 	multimap<float, int, std::greater<float> > scoremap;
@@ -378,6 +382,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	  querysum += queryp[i];
 	}
 
+	/*
 	float residual = n.subsample - querysum;
 
 	for (int pos = 0; iter != scoremap.end() && residual > 0; iter++, pos++) {
@@ -391,7 +396,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	    queryp[iter->second] = 1;
 	  }
 	}
-
+	*/
 	int num_train = 0;
 	float label_avg = 0, weight_sum = 0;
 	for (int i = 0; i < n.pool_pos && num_train < n.subsample + 1; i++)
@@ -418,6 +423,10 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	}
 	active_update_model(n, base, ec_arr, num_train);
 
+	for (int i = 0; i < n.pool_pos; i++) {
+	  free (n.pool[i]->ld);
+	  free (n.pool[i]);
+	}
 	n.pool_pos = 0;
 	free (local_pos);
 	free (train_pool);
@@ -551,6 +560,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
     if (all.l2_lambda != 0)
       n->active_reg_base = all.l2_lambda;
+    all.l2_lambda = 0;
 
     learner* l = new learner(n, all.l, n->k+1);
     if (n->active) {

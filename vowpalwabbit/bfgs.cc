@@ -564,7 +564,7 @@ int process_pass(vw& all, bfgs& b) {
 		  if (nanpattern((float)wolfe1))
 		    {
 		      fprintf(stderr, "\n");
-		      fprintf(stdout, "Derivative 0 detected.\n");
+		      //fprintf(stdout, "Derivative 0 detected.\n");
 		      b.step_size=0.0;
 		      status = LEARN_CONV;
 		    }
@@ -609,7 +609,7 @@ int process_pass(vw& all, bfgs& b) {
 			bfgs_iter_middle(all, b, b.mem, b.rho, b.alpha, b.lastj, b.origin);
 		      }
 		      catch (curv_exception e) {
-			fprintf(stdout, "In bfgs_iter_middle: %s", curv_message);
+			//fprintf(stdout, "In bfgs_iter_middle: %s", curv_message);
 			b.step_size=0.0;
 			status = LEARN_CURV;
 		      }
@@ -622,7 +622,7 @@ int process_pass(vw& all, bfgs& b) {
 			ftime(&b.t_end_global);
 			b.net_time = (int) (1000.0 * (b.t_end_global.time - b.t_start_global.time) + (b.t_end_global.millitm - b.t_start_global.millitm)); 
 			if (!all.quiet)
-			  fprintf(stderr, "%-10s\t%-10.5f\t%-10.5f", "", d_mag, b.step_size);
+			  fprintf(stderr, "%-10s\t%-10.5f\t%-10.5f\n", "", d_mag, b.step_size);
 			b.predictions.erase();
 			//if (status != LEARN_CURV)
 			update_weight(all, b.step_size, b.current_pass);		     		      
@@ -644,13 +644,13 @@ int process_pass(vw& all, bfgs& b) {
 		  float dd = (float)derivative_in_direction(all, b, b.mem, b.origin);
 		  if (b.curvature == 0. && dd != 0.)
 		    {
-		      fprintf(stdout, "%s", curv_message);
+		      //fprintf(stdout, "%s", curv_message);
 		      b.step_size=0.0;
 		      status = LEARN_CURV;
 		    }
 		  else if ( dd == 0.)
 		    {
-		      fprintf(stdout, "Derivative 0 detected.\n");
+		      //fprintf(stdout, "Derivative 0 detected.\n");
 		      b.step_size=0.0;
 		      status = LEARN_CONV;
 		    }
@@ -681,6 +681,10 @@ int process_pass(vw& all, bfgs& b) {
     ftime(&b.t_end_global);
     b.net_time = (int) (1000.0 * (b.t_end_global.time - b.t_start_global.time) + (b.t_end_global.millitm - b.t_start_global.millitm)); 
 
+    if (status == LEARN_CONV)
+      fprintf(stderr, "Derivative 0 detected.\n");
+    if (status == LEARN_CURV)
+      fprintf(stderr, "%s", curv_message);
     if (all.save_per_pass)
       save_predictor(all, all.final_regressor_name, b.current_pass);
     return status;
