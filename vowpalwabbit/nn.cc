@@ -23,6 +23,7 @@ namespace NN {
   const float hidden_min_activation = -3;
   const float hidden_max_activation = 3;
   const int nn_constant = 533357803;
+  const float min_prob = 0.0069f;
   
   struct nn {
     uint32_t k;
@@ -309,7 +310,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
   }
 
   void active_bfgs(nn& n, learner& base, example** ec_arr, int num_train) {
-    //cerr << "Starting BFGS on "<<num_train<<" examples"<<endl;
+    cerr << "Starting BFGS on "<<num_train<<" examples"<<endl;
     BFGS::bfgs* b = (BFGS::bfgs*) base.learn_fd.data;
     BFGS::reset_state(*(n.all), *b, true);
     b->backstep_on = false;
@@ -317,12 +318,13 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       for (int i = 0; i < num_train; i++)
 	passive_predict_or_learn<true>(n, base, *(ec_arr[i]));
 
-      //bool save_quiet = n.all->quiet;
-      //n.all->quiet = true;
-      b->regularizers = n.all->reg.weight_vector;
+      bool save_quiet = n.all->quiet;
+      n.all->quiet = true;
+      //b->regularizers = n.all->reg.weight_vector;
       int status = BFGS::process_pass(*(n.all), *b);
-      n.all->l2_lambda += n.active_reg_base; // scale regularizer linearly.
-      //n.all->quiet = save_quiet;
+      BFGS::preconditioner_to_regularizer(*(n.all), *b, 0);
+      //n.all->l2_lambda += n.active_reg_base; // scale regularizer linearly.
+      n.all->quiet = save_quiet;
       if (status != 0) {
 	// then we are done iterating.
 	//cerr << "Early termination of bfgs updates"<<endl;
@@ -378,7 +380,9 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	float querysum = 0;
 
 	for (int i = 0; i < n.pool_pos; i++) {
-	  queryp[i] = min<float>(gradients[i]/gradsum*(float)n.subsample, 1.0);
+	  //queryp[i] = min<float>(gradients[i]/gradsum*(float)n.subsample, 1.0);
+	  queryp[i] = min<float>(gradients[i], 1.0);
+	  queryp[i] = max<float>(queryp[i], min_prob);
 	  querysum += queryp[i];
 	}
 
@@ -399,7 +403,8 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	*/
 	int num_train = 0;
 	float label_avg = 0, weight_sum = 0;
-	for (int i = 0; i < n.pool_pos && num_train < n.subsample + 1; i++)
+	//for (int i = 0; i < n.pool_pos && num_train < n.subsample + 1; i++)
+	for (int i = 0; i < n.pool_pos; i++)
 	  if (frand48() < queryp[i]) {
 	    train_pool[i] = true;
 	    label_data* ld = (label_data*) n.pool[i]->ld;
