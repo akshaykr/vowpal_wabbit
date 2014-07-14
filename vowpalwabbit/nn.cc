@@ -7,6 +7,7 @@ license as described in the file LICENSE.
 #include <math.h>
 #include <stdio.h>
 #include <sstream>
+#include <sys/time.h>
 
 #include "reductions.h"
 #include "constant.h"
@@ -23,8 +24,9 @@ namespace NN {
   const float hidden_min_activation = -3;
   const float hidden_max_activation = 3;
   const int nn_constant = 533357803;
-  const float min_prob = 0.0069f;
-  
+  //  const float min_prob = 0.0069f;
+  const float min_prob = 0.003f;
+
   struct nn {
     uint32_t k;
     loss_function* squared_loss;
@@ -37,11 +39,16 @@ namespace NN {
     bool inpass;
     bool finished_setup;
 
+    // diagnostics
+    double train_time, subsample_time;
+    time_t subsample_start_time;
+
     // active flags
     bool active;
     bool active_pool_greedy;
     bool para_active;
     bool active_bfgs;
+    bool stream_pool;
     size_t active_passes;
     float active_reg_base; // initial regularization -- this is kind of hacky right now.
 
@@ -51,6 +58,7 @@ namespace NN {
     size_t subsample;
     example** pool;
     size_t numqueries;
+    size_t numexamples;
     size_t local_begin, local_end;
     float current_t;
     int save_interval;
@@ -117,6 +125,10 @@ namespace NN {
   {
     if (n.all->bfgs)
       n.xsubi = n.save_xsubi;
+    if (n.active_bfgs) {
+      cerr << "Total training time " << n.train_time << endl;
+      cerr << "Total subsampling time " << n.subsample_time << endl;
+    }
   }
 
   template <bool is_learn>
@@ -310,7 +322,6 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
   }
 
   void active_bfgs(nn& n, learner& base, example** ec_arr, int num_train) {
-    cerr << "Starting BFGS on "<<num_train<<" examples"<<endl;
     BFGS::bfgs* b = (BFGS::bfgs*) base.learn_fd.data;
     BFGS::reset_state(*(n.all), *b, true);
     b->backstep_on = false;
@@ -331,12 +342,20 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	break;
       }
     }
-    cerr << endl;
+    // cerr << endl;
   }
 
   void active_update_model(nn& n, learner& base, example** ec_arr, int num_train) {
-    if (n.active_bfgs)
+    if (n.active_bfgs) {
+      time_t start,end;
+      time(&start);
       active_bfgs(n, base, ec_arr, num_train);
+      time(&end);
+      double seconds = difftime(end, start);
+      n.train_time += seconds;
+      //cerr << "BFGS on "<<num_train<<" examples, subsampling rate "<< (float) n.numqueries/(float) n.numexamples<<endl;
+      //cerr << "BFGS on "<<num_train<<" examples in " << seconds << " seconds"<< endl;
+    }
     else
       for (int i = 0; i < num_train; i++) {
 	passive_predict_or_learn<true>(n, base, *(ec_arr[i]));
@@ -347,95 +366,130 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
   template <bool is_learn>
   void active_predict_or_learn(nn& n, learner& base, example& ec)
   {
+    n.numexamples++;
     passive_predict_or_learn<false>(n, base, ec);
 
     if (is_learn) {
-      // Just add this example to the pool.
-      example* ec_cpy = (example*) calloc_or_die(1, sizeof(example));
-      ec_cpy->ld = calloc_or_die(1, sizeof(label_data));
-      VW::copy_example_data(false, ec_cpy, &ec, sizeof(label_data), NULL);
-      n.pool[n.pool_pos++] = ec_cpy;
+      if (n.stream_pool) {
+	// If stream_pool is on then we decide immediately whether to train on this example or not
+	// We add it to n.pool and when n.pool is full we update the model.
+	example* ec_cpy = (example*) calloc_or_die(1, sizeof(example));
+	ec_cpy->ld = calloc_or_die(1, sizeof(label_data));
+	VW::copy_example_data(false, ec_cpy, &ec, sizeof(label_data), NULL);
 
-      if (n.pool_pos == n.pool_size) {
-	// Then we have to actually subsample and learn on the pool.
-	float* gradients = (float*)calloc_or_die(n.pool_pos, sizeof(float));
-	bool* train_pool = (bool*)calloc_or_die(n.pool_size, sizeof(bool));
-	size_t* local_pos = (size_t*)calloc_or_die(n.pool_pos, sizeof(size_t));
-
-	float gradsum = 0;
-	for(size_t idx = 0; idx < n.pool_pos; idx++) {
-	  example* ex = n.pool[idx];
-	  train_pool[idx] = false;
-	  gradients[idx] = fabs(n.all->loss->first_derivative(n.all->sd, ex->partial_prediction, ((label_data*)ex->ld)->label));
-	  gradsum += gradients[idx];
-	  ex->loss = n.all->loss->getLoss(n.all->sd, ex->partial_prediction, ((label_data*)ex->ld)->label);
+	float gradient = fabs(n.all->loss->first_derivative(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label));
+	ec_cpy->loss = n.all->loss->getLoss(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label);
+	float queryp = min<float>(gradient, 0.15);
+	queryp = max<float>(queryp, min_prob);
+	// cerr << "Processing example queryp: "<<queryp<< " rand: " << r <<" pool_pos: "<< n.pool_pos << " pool_size: "<< n.pool_size<<endl;
+	if (frand48() < queryp) {
+	  // cerr << "Adding example to pool"<<endl;
+	  n.pool[n.pool_pos++] = ec_cpy;
+	  label_data* ld = (label_data*) ec_cpy->ld;
+	  ld->weight = 1/queryp;
+	  n.numqueries++;
 	}
-
-	multimap<float, int, std::greater<float> > scoremap;
-	for(int i = 0; i < n.pool_pos; i++) 
-	  scoremap.insert(pair<const float, const int>(gradients[i], i));
-
-	multimap<float, int, std::greater<float> >::iterator iter = scoremap.begin();
-	float* queryp = (float*) calloc(n.pool_pos, sizeof(float));
-	float querysum = 0;
-
-	for (int i = 0; i < n.pool_pos; i++) {
-	  //queryp[i] = min<float>(gradients[i]/gradsum*(float)n.subsample, 1.0);
-	  queryp[i] = min<float>(gradients[i], 1.0);
-	  queryp[i] = max<float>(queryp[i], min_prob);
-	  querysum += queryp[i];
+	if (n.pool_pos == n.pool_size) {
+	  time_t end;
+	  time(&end);
+	  n.subsample_time += difftime(end, n.subsample_start_time);
+	  active_update_model(n, base, n.pool, n.pool_size);
+	  for (int i = 0; i < n.pool_pos; i++) {
+	    free (n.pool[i]->ld);
+	    free (n.pool[i]);
+	  }
+	  n.pool_pos = 0;
+	  time(&(n.subsample_start_time));
 	}
-
-	/*
-	float residual = n.subsample - querysum;
-
-	for (int pos = 0; iter != scoremap.end() && residual > 0; iter++, pos++) {
-	  if (pos == n.pool_pos)
+      }
+      else {
+	// Just add this example to the pool.
+	example* ec_cpy = (example*) calloc_or_die(1, sizeof(example));
+	ec_cpy->ld = calloc_or_die(1, sizeof(label_data));
+	VW::copy_example_data(false, ec_cpy, &ec, sizeof(label_data), NULL);
+	n.pool[n.pool_pos++] = ec_cpy;
+	
+	if (n.pool_pos == n.pool_size) {
+	  // Then we have to actually subsample and learn on the pool.
+	  float* gradients = (float*)calloc_or_die(n.pool_pos, sizeof(float));
+	  bool* train_pool = (bool*)calloc_or_die(n.pool_size, sizeof(bool));
+	  size_t* local_pos = (size_t*)calloc_or_die(n.pool_pos, sizeof(size_t));
+	  
+	  float gradsum = 0;
+	  for(size_t idx = 0; idx < n.pool_pos; idx++) {
+	    example* ex = n.pool[idx];
+	    train_pool[idx] = false;
+	    gradients[idx] = fabs(n.all->loss->first_derivative(n.all->sd, ex->partial_prediction, ((label_data*)ex->ld)->label));
+	    gradsum += gradients[idx];
+	    ex->loss = n.all->loss->getLoss(n.all->sd, ex->partial_prediction, ((label_data*)ex->ld)->label);
+	  }
+	  
+	  multimap<float, int, std::greater<float> > scoremap;
+	  for(int i = 0; i < n.pool_pos; i++) 
+	    scoremap.insert(pair<const float, const int>(gradients[i], i));
+	  
+	  multimap<float, int, std::greater<float> >::iterator iter = scoremap.begin();
+	  float* queryp = (float*) calloc(n.pool_pos, sizeof(float));
+	  float querysum = 0;
+	  
+	  for (int i = 0; i < n.pool_pos; i++) {
+	    //queryp[i] = min<float>(gradients[i]/gradsum*(float)n.subsample, 1.0);
+	    queryp[i] = min<float>(gradients[i], 1.0);
+	    queryp[i] = max<float>(queryp[i], min_prob);
+	    querysum += queryp[i];
+	  }
+	  
+	  /*
+	    float residual = n.subsample - querysum;
+	    
+	    for (int pos = 0; iter != scoremap.end() && residual > 0; iter++, pos++) {
+	    if (pos == n.pool_pos)
 	    cerr << "Problem: n.pool_pos == pos"<<endl;
-	  if (queryp[iter->second] + residual/(n.pool_pos - pos) <= 1) {
+	    if (queryp[iter->second] + residual/(n.pool_pos - pos) <= 1) {
 	    queryp[iter->second] += residual/(n.pool_pos - pos);
 	    residual -= residual/(n.pool_pos - pos);
-	  } else {
+	    } else {
 	    residual -= (1 - queryp[iter->second]);
 	    queryp[iter->second] = 1;
+	    }
+	    }
+	  */
+	  int num_train = 0;
+	  float label_avg = 0, weight_sum = 0;
+	  //for (int i = 0; i < n.pool_pos && num_train < n.subsample + 1; i++)
+	  for (int i = 0; i < n.pool_pos; i++)
+	    if (frand48() < queryp[i]) {
+	      train_pool[i] = true;
+	      label_data* ld = (label_data*) n.pool[i]->ld;
+	      ld->weight = 1/queryp[i]/n.pool_size;
+	      local_pos[num_train] = i;
+	      n.numqueries++;
+	      num_train++;
+	      label_avg += ((label_data*) n.pool[i]->ld)->weight * ((label_data*) n.pool[i]->ld)->label;
+	      weight_sum += ((label_data*) n.pool[i]->ld)->weight;
+	    }
+	  free(queryp);
+	  
+	  example** ec_arr = (example**) calloc_or_die(num_train, sizeof(example*));
+	  int idx = 0;
+	  for (int i = 0; i < n.pool_pos; i++) {
+	    if (!train_pool[i])
+	      continue;
+	    ec_arr[idx++] = n.pool[i];
+	    //example* ec = n.pool[i];
+	    //passive_predict_or_learn<is_learn>(n, base, *ec);
 	  }
-	}
-	*/
-	int num_train = 0;
-	float label_avg = 0, weight_sum = 0;
-	//for (int i = 0; i < n.pool_pos && num_train < n.subsample + 1; i++)
-	for (int i = 0; i < n.pool_pos; i++)
-	  if (frand48() < queryp[i]) {
-	    train_pool[i] = true;
-	    label_data* ld = (label_data*) n.pool[i]->ld;
-	    ld->weight = 1/queryp[i]/n.pool_size;
-	    local_pos[num_train] = i;
-	    n.numqueries++;
-	    num_train++;
-	    label_avg += ((label_data*) n.pool[i]->ld)->weight * ((label_data*) n.pool[i]->ld)->label;
-	    weight_sum += ((label_data*) n.pool[i]->ld)->weight;
+	  active_update_model(n, base, ec_arr, num_train);
+	  
+	  for (int i = 0; i < n.pool_pos; i++) {
+	    free (n.pool[i]->ld);
+	    free (n.pool[i]);
 	  }
-	free(queryp);
-
-	example** ec_arr = (example**) calloc_or_die(num_train, sizeof(example*));
-	int idx = 0;
-	for (int i = 0; i < n.pool_pos; i++) {
-	  if (!train_pool[i])
-	    continue;
-	  ec_arr[idx++] = n.pool[i];
-	  //example* ec = n.pool[i];
-	  //passive_predict_or_learn<is_learn>(n, base, *ec);
+	  n.pool_pos = 0;
+	  free (local_pos);
+	  free (train_pool);
+	  free (gradients);
 	}
-	active_update_model(n, base, ec_arr, num_train);
-
-	for (int i = 0; i < n.pool_pos; i++) {
-	  free (n.pool[i]->ld);
-	  free (n.pool[i]);
-	}
-	n.pool_pos = 0;
-	free (local_pos);
-	free (train_pool);
-	free (gradients);
       }
     }
   }
@@ -472,7 +526,8 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       ("active_bfgs", po::value<size_t>(), "do batch bfgs optimization on active pools")
       ("inpass", "Train or test sigmoidal feedforward network with input passthrough.")
       ("dropout", "Train or test sigmoidal feedforward network using dropout.")
-      ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
+      ("meanfield", "Train or test sigmoidal feedforward network using mean field.")
+      ("stream_pool", "Build active pool on the fly and train when active pool is full");
 
     vm = add_options(all, nn_opts);
 
@@ -490,6 +545,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       if (vm.count("para_active"))
 	n->para_active = 1;
       n->numqueries = 0;
+      n->numexamples = 0;
       if (n->para_active)
 	n->current_t = 0;
     }
@@ -498,6 +554,11 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       n->active_bfgs = 1;
       n->active_passes = vm["active_bfgs"].as<std::size_t>();
     }
+
+    if (vm.count("stream_pool"))
+      n->stream_pool = 1;
+    else
+      n->stream_pool = 0;
 
     if (vm.count("pool_size"))
       n->pool_size = vm["pool_size"].as<std::size_t>();
@@ -513,7 +574,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       n->subsample = ceil(n->pool_size / n->total);
     else
       n->subsample = 1;
-    cerr<<"Subsample = "<<n->subsample<<endl;
+    // cerr<<"Subsample = "<<n->subsample<<endl;
       
       
 
@@ -566,6 +627,11 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     if (all.l2_lambda != 0)
       n->active_reg_base = all.l2_lambda;
     all.l2_lambda = 0;
+
+    // diagnostics
+    n->train_time = 0;
+    n->subsample_time = 0;
+    time(&(n->subsample_start_time));
 
     learner* l = new learner(n, all.l, n->k+1);
     if (n->active) {

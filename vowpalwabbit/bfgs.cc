@@ -563,7 +563,7 @@ int process_pass(vw& all, bfgs& b) {
   /********************************************************************/ 
 		  if (nanpattern((float)wolfe1))
 		    {
-		      fprintf(stderr, "\n");
+		      //fprintf(stderr, "\n");
 		      //fprintf(stdout, "Derivative 0 detected.\n");
 		      b.step_size=0.0;
 		      status = LEARN_CONV;
@@ -682,9 +682,9 @@ int process_pass(vw& all, bfgs& b) {
     b.net_time = (int) (1000.0 * (b.t_end_global.time - b.t_start_global.time) + (b.t_end_global.millitm - b.t_start_global.millitm)); 
 
     if (status == LEARN_CONV)
-      fprintf(stderr, "Derivative 0 detected.\n");
+      // fprintf(stderr, "Derivative 0 detected.\n");
     if (status == LEARN_CURV)
-      fprintf(stderr, "%s", curv_message);
+      // fprintf(stderr, "%s", curv_message);
     if (all.save_per_pass)
       save_predictor(all, all.final_regressor_name, b.current_pass);
     return status;
