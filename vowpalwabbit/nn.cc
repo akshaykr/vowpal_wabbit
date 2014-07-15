@@ -7,6 +7,7 @@ license as described in the file LICENSE.
 #include <math.h>
 #include <stdio.h>
 #include <sstream>
+#include <stdlib.h>
 #include <sys/time.h>
 
 #include "reductions.h"
@@ -15,6 +16,8 @@ license as described in the file LICENSE.
 #include "rand48.h"
 #include "gd.h"
 #include "bfgs.h"
+#include "allreduce.h"
+#include "accumulate.h"
 
 using namespace std;
 using namespace LEARNER;
@@ -48,7 +51,6 @@ namespace NN {
     bool active_pool_greedy;
     bool para_active;
     bool active_bfgs;
-    bool stream_pool;
     size_t active_passes;
     float active_reg_base; // initial regularization -- this is kind of hacky right now.
 
@@ -64,7 +66,14 @@ namespace NN {
     int save_interval;
 
     // para-active state
+    std::string* span_server;
+    size_t unique_id; // unique id for each node in the network id == 0 means extra io
     size_t total; //total number of nodes
+    size_t node; // node id number
+    node_socks* socks;
+    bool all_done;
+    bool local_done;
+    time_t start_time;
 
     vw* all;
   };
@@ -321,19 +330,64 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     ec.loss = save_ec_loss;
   }
 
-  void active_bfgs(nn& n, learner& base, example** ec_arr, int num_train) {
+  void copy_examples(example& ec1, const example& ec2) {
+    if (ec2.ld != NULL) { 
+      ec1.ld = calloc_or_die(1, sizeof(label_data));
+      VW::copy_example_data(false, &ec1, &ec2, sizeof(label_data), NULL);
+    }
+  }
+  
+  void add_size_t(size_t& t1, const size_t& t2) {
+    t1 += t2;
+  }
+
+  void sync_queries(nn& n) {
+    /* get pool sizes */
+    size_t* pool_sizes = (size_t*) calloc_or_die(n.total, sizeof(size_t));
+    for (size_t i = 0; i <= n.total; i++)
+      pool_sizes[i] = 0;
+    pool_sizes[n.node] = (n.pool_pos - 1);
+    all_reduce<size_t, add_size_t>(pool_sizes, n.total, *n.span_server, n.unique_id, n.total, n.node, *n.socks);
+
+    size_t total_examples, offset = 0;
+    for (size_t i = 0; i <= n.total; i++) {
+      total_examples += pool_sizes[i];
+      if (i < n.node)
+	offset += pool_sizes[i];
+    }
+    /* If all sizes are zero we are done */
+    if (total_examples == 0) {
+      n.pool_pos = 0;
+      return;
+    }
+    else {
+      example* train_arr = (example*) calloc_or_die(total_examples, sizeof(example));
+      for (int i = 0; i <= (n.pool_pos-1); i++)
+	copy_examples(train_arr[offset+i], *(n.pool[i]));
+      all_reduce<example, copy_examples>(train_arr, total_examples, *n.span_server, n.unique_id, n.total, n.node, *n.socks);
+      
+      /* copy all of the examples in n.pool */
+      /* TODO is n.pool big enough */
+      for (int i = 0; i <= total_examples; i++) {
+	n.pool[i] = &(train_arr[i]);
+      }
+      n.pool_pos = total_examples+1;
+    }
+  }
+  
+
+  void active_bfgs(nn& n, learner& base) {
     BFGS::bfgs* b = (BFGS::bfgs*) base.learn_fd.data;
     BFGS::reset_state(*(n.all), *b, true);
     b->backstep_on = false;
     for (size_t iters = 0; iters < n.active_passes; iters++) {
-      for (int i = 0; i < num_train; i++)
-	passive_predict_or_learn<true>(n, base, *(ec_arr[i]));
+      for (int i = 0; i < n.pool_pos; i++)
+	passive_predict_or_learn<true>(n, base, *(n.pool[i]));
 
       bool save_quiet = n.all->quiet;
       n.all->quiet = true;
       //b->regularizers = n.all->reg.weight_vector;
       int status = BFGS::process_pass(*(n.all), *b);
-      BFGS::preconditioner_to_regularizer(*(n.all), *b, 0);
       //n.all->l2_lambda += n.active_reg_base; // scale regularizer linearly.
       n.all->quiet = save_quiet;
       if (status != 0) {
@@ -342,14 +396,21 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	break;
       }
     }
+    BFGS::preconditioner_to_regularizer(*(n.all), *b, 0);
     // cerr << endl;
   }
 
-  void active_update_model(nn& n, learner& base, example** ec_arr, int num_train) {
+  bool active_update_model(nn& n, learner& base) {
+    if (n.para_active)
+      sync_queries(n);
+
+    if (n.pool_pos == 0)
+      return 1;
+
     if (n.active_bfgs) {
       time_t start,end;
       time(&start);
-      active_bfgs(n, base, ec_arr, num_train);
+      active_bfgs(n, base);
       time(&end);
       double seconds = difftime(end, start);
       n.train_time += seconds;
@@ -357,9 +418,10 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       //cerr << "BFGS on "<<num_train<<" examples in " << seconds << " seconds"<< endl;
     }
     else
-      for (int i = 0; i < num_train; i++) {
-	passive_predict_or_learn<true>(n, base, *(ec_arr[i]));
+      for (int i = 0; i < n.pool_pos; i++) {
+	passive_predict_or_learn<true>(n, base, *(n.pool[i]));
       }
+    return 0;
   }
 
 
@@ -370,126 +432,38 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     passive_predict_or_learn<false>(n, base, ec);
 
     if (is_learn) {
-      if (n.stream_pool) {
-	// If stream_pool is on then we decide immediately whether to train on this example or not
-	// We add it to n.pool and when n.pool is full we update the model.
+      // Then we decide immediately whether to train on this example or not
+      // We add it to n.pool and when n.pool is full we update the model.
+      float gradient = fabs(n.all->loss->first_derivative(n.all->sd, ec.partial_prediction, ((label_data*)ec.ld)->label));
+      ec.loss = n.all->loss->getLoss(n.all->sd, ec.partial_prediction, ((label_data*)ec.ld)->label);
+      float queryp = min<float>(gradient, 0.15);
+      queryp = max<float>(queryp, min_prob);
+      // cerr << "Processing example queryp: "<<queryp<< " rand: " << r <<" pool_pos: "<< n.pool_pos << " pool_size: "<< n.pool_size<<endl;
+      if (frand48() < queryp) {
+	// cerr << "Adding example to pool"<<endl;
+	// Copy the example and add it to the pool.
 	example* ec_cpy = (example*) calloc_or_die(1, sizeof(example));
 	ec_cpy->ld = calloc_or_die(1, sizeof(label_data));
 	VW::copy_example_data(false, ec_cpy, &ec, sizeof(label_data), NULL);
-
-	float gradient = fabs(n.all->loss->first_derivative(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label));
-	ec_cpy->loss = n.all->loss->getLoss(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label);
-	float queryp = min<float>(gradient, 0.15);
-	queryp = max<float>(queryp, min_prob);
-	// cerr << "Processing example queryp: "<<queryp<< " rand: " << r <<" pool_pos: "<< n.pool_pos << " pool_size: "<< n.pool_size<<endl;
-	if (frand48() < queryp) {
-	  // cerr << "Adding example to pool"<<endl;
-	  n.pool[n.pool_pos++] = ec_cpy;
-	  label_data* ld = (label_data*) ec_cpy->ld;
-	  ld->weight = 1/queryp;
-	  n.numqueries++;
-	}
-	if (n.pool_pos == n.pool_size) {
-	  time_t end;
-	  time(&end);
-	  n.subsample_time += difftime(end, n.subsample_start_time);
-	  active_update_model(n, base, n.pool, n.pool_size);
-	  for (int i = 0; i < n.pool_pos; i++) {
-	    free (n.pool[i]->ld);
-	    free (n.pool[i]);
-	  }
-	  n.pool_pos = 0;
-	  time(&(n.subsample_start_time));
-	}
-      }
-      else {
-	// Just add this example to the pool.
-	example* ec_cpy = (example*) calloc_or_die(1, sizeof(example));
-	ec_cpy->ld = calloc_or_die(1, sizeof(label_data));
-	VW::copy_example_data(false, ec_cpy, &ec, sizeof(label_data), NULL);
-	n.pool[n.pool_pos++] = ec_cpy;
+	//float gradient = fabs(n.all->loss->first_derivative(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label));
+	//ec_cpy->loss = n.all->loss->getLoss(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label);
 	
-	if (n.pool_pos == n.pool_size) {
-	  // Then we have to actually subsample and learn on the pool.
-	  float* gradients = (float*)calloc_or_die(n.pool_pos, sizeof(float));
-	  bool* train_pool = (bool*)calloc_or_die(n.pool_size, sizeof(bool));
-	  size_t* local_pos = (size_t*)calloc_or_die(n.pool_pos, sizeof(size_t));
-	  
-	  float gradsum = 0;
-	  for(size_t idx = 0; idx < n.pool_pos; idx++) {
-	    example* ex = n.pool[idx];
-	    train_pool[idx] = false;
-	    gradients[idx] = fabs(n.all->loss->first_derivative(n.all->sd, ex->partial_prediction, ((label_data*)ex->ld)->label));
-	    gradsum += gradients[idx];
-	    ex->loss = n.all->loss->getLoss(n.all->sd, ex->partial_prediction, ((label_data*)ex->ld)->label);
-	  }
-	  
-	  multimap<float, int, std::greater<float> > scoremap;
-	  for(int i = 0; i < n.pool_pos; i++) 
-	    scoremap.insert(pair<const float, const int>(gradients[i], i));
-	  
-	  multimap<float, int, std::greater<float> >::iterator iter = scoremap.begin();
-	  float* queryp = (float*) calloc(n.pool_pos, sizeof(float));
-	  float querysum = 0;
-	  
-	  for (int i = 0; i < n.pool_pos; i++) {
-	    //queryp[i] = min<float>(gradients[i]/gradsum*(float)n.subsample, 1.0);
-	    queryp[i] = min<float>(gradients[i], 1.0);
-	    queryp[i] = max<float>(queryp[i], min_prob);
-	    querysum += queryp[i];
-	  }
-	  
-	  /*
-	    float residual = n.subsample - querysum;
-	    
-	    for (int pos = 0; iter != scoremap.end() && residual > 0; iter++, pos++) {
-	    if (pos == n.pool_pos)
-	    cerr << "Problem: n.pool_pos == pos"<<endl;
-	    if (queryp[iter->second] + residual/(n.pool_pos - pos) <= 1) {
-	    queryp[iter->second] += residual/(n.pool_pos - pos);
-	    residual -= residual/(n.pool_pos - pos);
-	    } else {
-	    residual -= (1 - queryp[iter->second]);
-	    queryp[iter->second] = 1;
-	    }
-	    }
-	  */
-	  int num_train = 0;
-	  float label_avg = 0, weight_sum = 0;
-	  //for (int i = 0; i < n.pool_pos && num_train < n.subsample + 1; i++)
-	  for (int i = 0; i < n.pool_pos; i++)
-	    if (frand48() < queryp[i]) {
-	      train_pool[i] = true;
-	      label_data* ld = (label_data*) n.pool[i]->ld;
-	      ld->weight = 1/queryp[i]/n.pool_size;
-	      local_pos[num_train] = i;
-	      n.numqueries++;
-	      num_train++;
-	      label_avg += ((label_data*) n.pool[i]->ld)->weight * ((label_data*) n.pool[i]->ld)->label;
-	      weight_sum += ((label_data*) n.pool[i]->ld)->weight;
-	    }
-	  free(queryp);
-	  
-	  example** ec_arr = (example**) calloc_or_die(num_train, sizeof(example*));
-	  int idx = 0;
-	  for (int i = 0; i < n.pool_pos; i++) {
-	    if (!train_pool[i])
-	      continue;
-	    ec_arr[idx++] = n.pool[i];
-	    //example* ec = n.pool[i];
-	    //passive_predict_or_learn<is_learn>(n, base, *ec);
-	  }
-	  active_update_model(n, base, ec_arr, num_train);
-	  
-	  for (int i = 0; i < n.pool_pos; i++) {
-	    free (n.pool[i]->ld);
-	    free (n.pool[i]);
-	  }
-	  n.pool_pos = 0;
-	  free (local_pos);
-	  free (train_pool);
-	  free (gradients);
+	n.pool[n.pool_pos++] = ec_cpy;
+	label_data* ld = (label_data*) ec_cpy->ld;
+	ld->weight = 1/queryp;
+	n.numqueries++;
+      }
+      if (n.pool_pos == n.pool_size) {
+	time_t end;
+	time(&end);
+	n.subsample_time += difftime(end, n.subsample_start_time);
+	active_update_model(n, base);
+	for (int i = 0; i < n.pool_pos; i++) {
+	  free (n.pool[i]->ld);
+	  free (n.pool[i]);
 	}
+	n.pool_pos = 0;
+	time(&(n.subsample_start_time));
       }
     }
   }
@@ -504,6 +478,9 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
   void finish(nn& n)
   {
+    if (n.para_active) {
+      while (!active_update_model(n, *(n.all->l)));
+    }
     if (n.active)
       cerr<<"Number of label queries = "<<n.numqueries<<endl;
 
@@ -526,8 +503,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       ("active_bfgs", po::value<size_t>(), "do batch bfgs optimization on active pools")
       ("inpass", "Train or test sigmoidal feedforward network with input passthrough.")
       ("dropout", "Train or test sigmoidal feedforward network using dropout.")
-      ("meanfield", "Train or test sigmoidal feedforward network using mean field.")
-      ("stream_pool", "Build active pool on the fly and train when active pool is full");
+      ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
 
     vm = add_options(all, nn_opts);
 
@@ -550,22 +526,32 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	n->current_t = 0;
     }
 
+    if(n->para_active) {
+      n->span_server = new std::string(all.span_server);
+      n->total = all.total;
+      n->unique_id = all.unique_id;
+      n->node = all.node;
+      n->socks = new node_socks();
+      n->socks->current_master = all.socks.current_master;
+
+      all.span_server = "";
+      all.total = 0;      
+    }
+
     if (vm.count("active_bfgs")) {
       n->active_bfgs = 1;
       n->active_passes = vm["active_bfgs"].as<std::size_t>();
     }
-
-    if (vm.count("stream_pool"))
-      n->stream_pool = 1;
-    else
-      n->stream_pool = 0;
 
     if (vm.count("pool_size"))
       n->pool_size = vm["pool_size"].as<std::size_t>();
     else
       n->pool_size = 1;
 
-    n->pool = (example**)calloc_or_die(n->pool_size, sizeof(example*));
+    if (n->para_active)
+      n->pool = (example**)calloc_or_die(n->pool_size*n->total, sizeof(example*));
+    else
+      n->pool = (example**)calloc_or_die(n->pool_size, sizeof(example*));
     n->pool_pos = 0;
 
     if (vm.count("subsample"))

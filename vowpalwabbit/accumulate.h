@@ -8,6 +8,8 @@ license as described in the file LICENSE.
 #define ACCUMULATE_H
 #include "global_data.h"
 
+void add_float(float& c1, const float& c2);
+
 void accumulate(vw& all, std::string master_location, regressor& reg, size_t o);
 float accumulate_scalar(vw& all, std::string master_location, float local_sum);
 void accumulate_weighted_avg(vw& all, std::string master_location, regressor& reg);
