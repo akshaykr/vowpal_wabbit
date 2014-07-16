@@ -18,6 +18,7 @@ license as described in the file LICENSE.
 #include "bfgs.h"
 #include "allreduce.h"
 #include "accumulate.h"
+#include "cache.h"
 
 using namespace std;
 using namespace LEARNER;
@@ -75,10 +76,33 @@ namespace NN {
     bool local_done;
     time_t start_time;
 
+    learner* base;
     vw* all;
   };
 
 #define cast_uint32_t static_cast<uint32_t>
+
+  void print_example(vw* all, example* ec) {
+    if(ec->ld) {
+      cerr<<"Label: "<<((label_data*)ec->ld)->label<<" "<<((label_data*)ec->ld)->weight<<endl;      
+    }
+    cerr<<"Counter: "<<ec->example_counter<<endl;
+    cerr<<"Indices: "<<ec->indices.size()<<" ";
+    for(size_t i = 0;i < ec->indices.size();i++)
+      cerr<<(int)ec->indices[i]<<":"<<ec->atomics[(int)ec->indices[i]].size()<<" ";
+    cerr<<endl;
+    cerr<<"Offset = "<<ec->ft_offset<<endl;
+    cerr<<"Num features = "<<ec->num_features<<endl;
+    cerr<<"Loss = "<<ec->loss<<endl;
+    cerr<<"Eta = "<<ec->eta_round<<" "<<ec->eta_global<<endl;
+    cerr<<"Example t = "<<ec->example_t<<endl;
+    cerr<<"Sum_sq = "<<ec->total_sum_feat_sq<<endl;
+    cerr<<"Revert weight = "<<ec->revert_weight<<endl;
+    cerr<<"Test only = "<<ec->test_only<<endl;
+    cerr<<"End pass = "<<ec->end_pass<<endl;
+    cerr<<"Sorted = "<<ec->sorted<<endl;
+    cerr<<"In use = "<<ec->in_use<<endl;
+  }
 
   static inline float
   fastpow2 (float p)
@@ -337,42 +361,113 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     }
   }
   
+  void copy_char(char& c1, const char& c2) {
+    if (c2 != '\0')
+      c1 = c2;
+  }
+
   void add_size_t(size_t& t1, const size_t& t2) {
     t1 += t2;
   }
 
   void sync_queries(nn& n) {
-    /* get pool sizes */
-    size_t* pool_sizes = (size_t*) calloc_or_die(n.total, sizeof(size_t));
-    for (size_t i = 0; i <= n.total; i++)
-      pool_sizes[i] = 0;
-    pool_sizes[n.node] = (n.pool_pos - 1);
-    all_reduce<size_t, add_size_t>(pool_sizes, n.total, *n.span_server, n.unique_id, n.total, n.node, *n.socks);
-
-    size_t total_examples, offset = 0;
-    for (size_t i = 0; i <= n.total; i++) {
-      total_examples += pool_sizes[i];
-      if (i < n.node)
-	offset += pool_sizes[i];
+    io_buf *b = new io_buf();
+    
+    cerr << "Pool Size " << n.pool_pos << endl;
+    for (size_t i = 0; i < n.pool_pos; i++) {
+      n.all->p->lp.cache_label(n.pool[i]->ld, *b);
+      cache_features(*b, n.pool[i], n.all->reg.weight_mask);
     }
+
+    float* sizes = (float*) calloc_or_die(n.total, sizeof(float));
+    for (size_t i = 0; i < n.total; i++)
+      sizes[i] = 0;
+    sizes[n.node] = b->space.end - b->space.begin;
+    all_reduce<float, add_float>(sizes, n.total, *n.span_server, n.unique_id, n.total, n.node, *n.socks);
+
+    int prev_sum = 0, total_sum = 0;
+    for (int i = 0; i< n.total; i++) {
+      if (i <= (int)(n.node - 1))
+	prev_sum += sizes[i];
+      total_sum += sizes[i];
+    }
+
     /* If all sizes are zero we are done */
-    if (total_examples == 0) {
+    if (total_sum <= 0) {
+      for (size_t i = 0; i < n.pool_pos; i++) {
+	// at this point we can free our examples because we cached them and will
+	// rewrite them to the pool. 
+	dealloc_example(NULL, *(n.pool[i]));
+	free(n.pool[i]);
+      }
+      free (sizes);
+      delete b;
       n.pool_pos = 0;
       return;
     }
     else {
-      example* train_arr = (example*) calloc_or_die(total_examples, sizeof(example));
-      for (int i = 0; i <= (n.pool_pos-1); i++)
-	copy_examples(train_arr[offset+i], *(n.pool[i]));
-      all_reduce<example, copy_examples>(train_arr, total_examples, *n.span_server, n.unique_id, n.total, n.node, *n.socks);
-      
-      /* copy all of the examples in n.pool */
-      /* TODO is n.pool big enough */
-      for (int i = 0; i <= total_examples; i++) {
-	n.pool[i] = &(train_arr[i]);
+      char* to_share = (char*) calloc_or_die(total_sum, sizeof(char));
+      memset(to_share, '\0', total_sum);
+      memcpy(to_share + prev_sum, b->space.begin, b->space.end - b->space.begin);
+      b->space.delete_v();
+      all_reduce<char, copy_char>(to_share, total_sum, *n.span_server, n.unique_id, n.total, n.node, *n.socks);
+
+      for (size_t i = 0; i < n.pool_pos; i++) {
+	// at this point we can free our examples because we cached them and will
+	// rewrite them to the pool. 
+	dealloc_example(NULL, *(n.pool[i]));
+	free(n.pool[i]);
       }
-      n.pool_pos = total_examples+1;
+
+      b->space.begin = to_share;
+      b->space.end = b->space.begin;
+      b->endloaded = &to_share[total_sum*sizeof(char)];
+
+      n.pool_pos = 0;
+      size_t num_read = 0;
+      float label_avg = 0, weight_sum = 0;
+      float min_weight = FLT_MAX, max_weight = -1;
+      // int min_pos = -1, max_pos = -1;
+      for (int i = 0; num_read < total_sum; n.pool_pos++, i++) {
+	n.pool[i] = (example*) calloc(1, sizeof(example));
+	n.pool[i]->ld = calloc(1, sizeof(simple_label));
+	//cerr<<"i = "<<i<<" "<<num_read<<endl;
+	if(read_cached_features(n.all, b, n.pool[i])) {
+	  //if(!save_load_example(*b, true, n.pool[i])) {
+	  // cerr<<"***********After**************\n";
+	  n.pool[i]->in_use = true;	
+	  float weight = ((label_data*) n.pool[i]->ld)->weight;
+	  n.current_t += weight;
+	  // cerr<<"Current_t = "<<n.current_t<<endl;
+	  n.pool[i]->example_t = n.current_t;	
+	  label_avg += weight * ((label_data*) n.pool[i]->ld)->label;
+	  weight_sum += weight;
+	  if(weight > max_weight) {
+	    max_weight = weight;
+	    // max_pos = i;
+	  }
+	  if(weight < min_weight) {
+	    min_weight = weight;
+	    // min_pos = i;
+	  }
+	  // print_example(n.all, n.pool[i]);
+	}
+	else
+	  break;
+
+	num_read = min(b->space.end - b->space.begin, b->endloaded - b->space.begin);
+	if (num_read == prev_sum)
+	  n.local_begin = i+1;
+	if (num_read == prev_sum + sizes[n.node])
+	  n.local_end = i;
+      }
+      // TODO: does deleting b free to_share?
+      // free (to_share);
     }
+    free (sizes);
+    delete b;
+    cerr << "After Pool Size " << n.pool_pos << endl;
+    cerr << "DONE WITH SYNC QUERIES" << endl;
   }
   
 
@@ -381,7 +476,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     BFGS::reset_state(*(n.all), *b, true);
     b->backstep_on = false;
     for (size_t iters = 0; iters < n.active_passes; iters++) {
-      for (int i = 0; i < n.pool_pos; i++)
+      for (size_t i = 0; i < n.pool_pos; i++)
 	passive_predict_or_learn<true>(n, base, *(n.pool[i]));
 
       bool save_quiet = n.all->quiet;
@@ -418,9 +513,14 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       //cerr << "BFGS on "<<num_train<<" examples in " << seconds << " seconds"<< endl;
     }
     else
-      for (int i = 0; i < n.pool_pos; i++) {
+      for (size_t i = 0; i < n.pool_pos; i++) {
 	passive_predict_or_learn<true>(n, base, *(n.pool[i]));
       }
+    for (size_t i = 0; i < n.pool_pos; i++) {
+      dealloc_example(NULL, *(n.pool[i]));
+      free (n.pool[i]);
+    }
+    n.pool_pos = 0;
     return 0;
   }
 
@@ -428,6 +528,8 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
   template <bool is_learn>
   void active_predict_or_learn(nn& n, learner& base, example& ec)
   {
+    if (n.base == NULL)
+      n.base = &base;
     n.numexamples++;
     passive_predict_or_learn<false>(n, base, ec);
 
@@ -458,11 +560,6 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	time(&end);
 	n.subsample_time += difftime(end, n.subsample_start_time);
 	active_update_model(n, base);
-	for (int i = 0; i < n.pool_pos; i++) {
-	  free (n.pool[i]->ld);
-	  free (n.pool[i]);
-	}
-	n.pool_pos = 0;
 	time(&(n.subsample_start_time));
       }
     }
@@ -479,14 +576,23 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
   void finish(nn& n)
   {
     if (n.para_active) {
-      while (!active_update_model(n, *(n.all->l)));
+      if (n.all->l == NULL) 
+	cerr << "BASE LEARNER IS NULL\n";
+      while (!active_update_model(n, *(n.base)));
     }
     if (n.active)
       cerr<<"Number of label queries = "<<n.numqueries<<endl;
 
+    for (size_t i = 0; i < n.pool_pos; i++) {
+      dealloc_example(NULL, *(n.pool[i]));
+      free (n.pool[i]);
+    }
     delete n.squared_loss;
     free (n.output_layer.indices.begin);
     free (n.output_layer.atomics[nn_output_namespace].begin);
+    free (n.pool);
+    delete n.socks;
+    delete n.span_server;
   }
 
   learner* setup(vw& all, po::variables_map& vm)
@@ -619,6 +725,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     n->subsample_time = 0;
     time(&(n->subsample_start_time));
 
+    n->base = NULL;
     learner* l = new learner(n, all.l, n->k+1);
     if (n->active) {
       l->set_learn<nn, active_predict_or_learn<true> >();

@@ -51,9 +51,13 @@ __attribute__((packed))
 int read_cached_features(void* in, example* ec)
 {
   vw* all = (vw*)in;
+  return read_cached_features(all, all->p->input, ec);	
+}
+
+int read_cached_features(vw* all, io_buf* input, example* ec)
+{
   example* ae = (example*)ec;
   ae->sorted = all->p->sorted_cache;
-  io_buf* input = all->p->input;
 
   size_t total = all->p->lp.read_cached_label(all->sd, ae->ld, *input);
   if (total == 0)
@@ -67,7 +71,7 @@ int read_cached_features(void* in, example* ec)
   num_indices = *(unsigned char*)c;
   c += sizeof(num_indices);
 
-  all->p->input->set(c);
+  input->set(c);
   for (;num_indices > 0; num_indices--)
     {
       size_t temp;
@@ -84,7 +88,7 @@ int read_cached_features(void* in, example* ec)
       float* our_sum_feat_sq = ae->sum_feat_sq+index;
       size_t storage = *(size_t *)c;
       c += sizeof(size_t);
-      all->p->input->set(c);
+      input->set(c);
       total += storage; 
      if (buf_read(*input,c,storage) < storage) {
 	cerr << "truncated example! wanted: " << storage << " bytes" << endl;
@@ -115,7 +119,7 @@ int read_cached_features(void* in, example* ec)
 	  last = f.weight_index;
 	  ours->push_back(f);
 	}
-      all->p->input->set(c);
+      input->set(c);
     }
 
   return (int)total;

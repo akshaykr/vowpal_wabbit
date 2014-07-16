@@ -815,6 +815,7 @@ void finish(bfgs& b)
   free(b.mem);
   free(b.rho);
   free(b.alpha);
+  free(b.regularizers);
 }
 
 void save_load_regularizer(vw& all, bfgs& b, io_buf& model_file, bool read, bool text)

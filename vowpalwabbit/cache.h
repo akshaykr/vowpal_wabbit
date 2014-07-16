@@ -14,6 +14,7 @@ const size_t char_size = 2;
 char* run_len_decode(char *p, size_t& i);
 char* run_len_encode(char *p, size_t i);
 
+int read_cached_features(vw* all, io_buf* input, example* ec);
 int read_cached_features(void*a, example* ec);
 void cache_tag(io_buf& cache, v_array<char> tag);
 void cache_features(io_buf& cache, example* ae, uint32_t mask);
