@@ -8,7 +8,7 @@ license as described in the file LICENSE.
 #include <stdio.h>
 #include <sstream>
 #include <stdlib.h>
-#include <sys/time.h>
+#include <time.h>
 
 #include "reductions.h"
 #include "constant.h"
@@ -45,7 +45,7 @@ namespace NN {
 
     // diagnostics
     double train_time, subsample_time;
-    time_t subsample_start_time;
+    //time_t subsample_start_time;
 
     // active flags
     bool active;
@@ -75,6 +75,9 @@ namespace NN {
     bool all_done;
     bool local_done;
     time_t start_time;
+    size_t model_num;
+	size_t save_counter;
+	size_t save_freq;
 
     learner* base;
     vw* all;
@@ -167,6 +170,26 @@ namespace NN {
   template <bool is_learn>
   void passive_predict_or_learn(nn& n, learner& base, example& ec)
   {
+	  // cout<<"Learn flag is "<<is_learn<<endl;
+	  if (n.all->training && is_learn && !n.active && n.all->sd->example_number % 100000 == 0 && strcmp(n.all->final_regressor_name.c_str(),"") != 0) {
+		if (n.save_counter % n.save_freq == 0) {
+			// Save the model every 100000 examples.
+			time_t now;
+			double elapsed;
+			time(&now);
+			elapsed = difftime(now, n.start_time);
+
+			string final_regressor_name = n.all->final_regressor_name;
+			char buffer[50];
+			sprintf(buffer, ".%d", n.model_num);
+			final_regressor_name.append(buffer);
+			cerr << "Saving predictor " << final_regressor_name << " elapsed time " << elapsed << endl;
+			save_predictor(*(n.all), final_regressor_name, 0);
+			n.model_num ++;
+		}
+		n.save_counter++;
+    }
+      
     bool shouldOutput = n.all->raw_prediction > 0;
     if (! n.finished_setup)
       finish_setup (n, *(n.all));
@@ -386,12 +409,16 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     all_reduce<float, add_float>(sizes, n.total, *n.span_server, n.unique_id, n.total, n.node, *n.socks);
 
     int prev_sum = 0, total_sum = 0;
+    int num_active = 0;
     for (int i = 0; i< n.total; i++) {
       if (i <= (int)(n.node - 1))
 	prev_sum += sizes[i];
+      if (sizes[i] != 0)
+	num_active++;
       total_sum += sizes[i];
     }
 
+    cerr << "Number of active nodes: " << num_active << endl;
     /* If all sizes are zero we are done */
     if (total_sum <= 0) {
       for (size_t i = 0; i < n.pool_pos; i++) {
@@ -467,7 +494,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     free (sizes);
     delete b;
     cerr << "After Pool Size " << n.pool_pos << endl;
-    cerr << "DONE WITH SYNC QUERIES" << endl;
+    // cerr << "DONE WITH SYNC QUERIES" << endl;
   }
   
 
@@ -480,14 +507,14 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	passive_predict_or_learn<true>(n, base, *(n.pool[i]));
 
       bool save_quiet = n.all->quiet;
-      n.all->quiet = true;
+      //n.all->quiet = true;
       //b->regularizers = n.all->reg.weight_vector;
       int status = BFGS::process_pass(*(n.all), *b);
       //n.all->l2_lambda += n.active_reg_base; // scale regularizer linearly.
       n.all->quiet = save_quiet;
       if (status != 0) {
 	// then we are done iterating.
-	//cerr << "Early termination of bfgs updates"<<endl;
+	cerr << "Early termination of bfgs updates"<<endl;
 	break;
       }
     }
@@ -503,12 +530,12 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       return 1;
 
     if (n.active_bfgs) {
-      time_t start,end;
-      time(&start);
+      //time_t start,end;
+      //time(&start);
       active_bfgs(n, base);
-      time(&end);
-      double seconds = difftime(end, start);
-      n.train_time += seconds;
+      //time(&end);
+      //double seconds = difftime(end, start);
+      //n.train_time += seconds;
       //cerr << "BFGS on "<<num_train<<" examples, subsampling rate "<< (float) n.numqueries/(float) n.numexamples<<endl;
       //cerr << "BFGS on "<<num_train<<" examples in " << seconds << " seconds"<< endl;
     }
@@ -516,6 +543,22 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       for (size_t i = 0; i < n.pool_pos; i++) {
 	passive_predict_or_learn<true>(n, base, *(n.pool[i]));
       }
+	  if (n.save_counter % n.save_freq == 0) {
+		time_t now;	
+		double elapsed;
+		time(&now);
+		elapsed = difftime(now, n.start_time);
+
+		// Save the model
+		string final_regressor_name = n.all->final_regressor_name;
+		char buffer[50];
+		sprintf(buffer, ".%d", n.model_num);
+		final_regressor_name.append(buffer);
+		cerr << "Saving predictor " << final_regressor_name << " elapsed time " << elapsed << endl;
+		save_predictor(*(n.all), final_regressor_name, 0);
+		n.model_num ++;
+	  }
+	  n.save_counter++;
     for (size_t i = 0; i < n.pool_pos; i++) {
       dealloc_example(NULL, *(n.pool[i]));
       free (n.pool[i]);
@@ -556,11 +599,11 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	n.numqueries++;
       }
       if (n.pool_pos == n.pool_size) {
-	time_t end;
-	time(&end);
-	n.subsample_time += difftime(end, n.subsample_start_time);
+	//time_t end;
+	//time(&end);
+	//n.subsample_time += difftime(end, n.subsample_start_time);
 	active_update_model(n, base);
-	time(&(n.subsample_start_time));
+	//time(&(n.subsample_start_time));
       }
     }
   }
@@ -609,6 +652,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       ("active_bfgs", po::value<size_t>(), "do batch bfgs optimization on active pools")
       ("inpass", "Train or test sigmoidal feedforward network with input passthrough.")
       ("dropout", "Train or test sigmoidal feedforward network using dropout.")
+	  ("save_freq", po::value<size_t>(), "how often should we save the model.")
       ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
 
     vm = add_options(all, nn_opts);
@@ -631,6 +675,14 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       if (n->para_active)
 	n->current_t = 0;
     }
+
+    n->model_num = 0;
+	n->save_counter = 0;
+	n->save_freq = 1;
+	if (vm.count("save_freq"))
+		n->save_freq = vm["save_freq"].as<std::size_t>();
+
+    time (&(n->start_time));
 
     if(n->para_active) {
       n->span_server = new std::string(all.span_server);
@@ -723,7 +775,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     // diagnostics
     n->train_time = 0;
     n->subsample_time = 0;
-    time(&(n->subsample_start_time));
+   //time(&(n->subsample_start_time));
 
     n->base = NULL;
     learner* l = new learner(n, all.l, n->k+1);
