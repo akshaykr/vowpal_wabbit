@@ -55,6 +55,7 @@ namespace BFGS {
     bool first_pass;
     bool gradient_pass;
     bool preconditioner_pass;
+    bool do_end_pass;
   };
 
   int process_pass(vw& all, bfgs& b);

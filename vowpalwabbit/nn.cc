@@ -32,6 +32,7 @@ namespace NN {
   const float min_prob = 0.003f;
 
   struct nn {
+    float loss_sum;
     uint32_t k;
     loss_function* squared_loss;
     example output_layer;
@@ -58,6 +59,8 @@ namespace NN {
     // pool maintainence
     size_t pool_size;
     size_t pool_pos;
+    size_t num_positive;
+
     size_t subsample;
     example** pool;
     size_t numqueries;
@@ -76,8 +79,9 @@ namespace NN {
     bool local_done;
     time_t start_time;
     size_t model_num;
-	size_t save_counter;
-	size_t save_freq;
+    size_t save_counter;
+    size_t save_freq;
+    bool save_models;
 
     learner* base;
     vw* all;
@@ -97,6 +101,7 @@ namespace NN {
     cerr<<"Offset = "<<ec->ft_offset<<endl;
     cerr<<"Num features = "<<ec->num_features<<endl;
     cerr<<"Loss = "<<ec->loss<<endl;
+    cerr<<"Partial Prediction = "<<ec->partial_prediction<<endl;
     cerr<<"Eta = "<<ec->eta_round<<" "<<ec->eta_global<<endl;
     cerr<<"Example t = "<<ec->example_t<<endl;
     cerr<<"Sum_sq = "<<ec->total_sum_feat_sq<<endl;
@@ -159,35 +164,42 @@ namespace NN {
 
   void end_pass(nn& n)
   {
+    cerr << "Done with pass" << endl;
+    // cerr << "Loss Sum " << n.loss_sum<< endl;
+    n.loss_sum = 0;
+
     if (n.all->bfgs)
       n.xsubi = n.save_xsubi;
+    /*
     if (n.active_bfgs) {
       cerr << "Total training time " << n.train_time << endl;
       cerr << "Total subsampling time " << n.subsample_time << endl;
     }
+    */
   }
 
   template <bool is_learn>
   void passive_predict_or_learn(nn& n, learner& base, example& ec)
   {
-	  // cout<<"Learn flag is "<<is_learn<<endl;
-	  if (n.all->training && is_learn && !n.active && n.all->sd->example_number % 100000 == 0 && strcmp(n.all->final_regressor_name.c_str(),"") != 0) {
-		if (n.save_counter % n.save_freq == 0) {
-			// Save the model every 100000 examples.
-			time_t now;
-			double elapsed;
-			time(&now);
-			elapsed = difftime(now, n.start_time);
-
-			string final_regressor_name = n.all->final_regressor_name;
-			char buffer[50];
-			sprintf(buffer, ".%d", n.model_num);
-			final_regressor_name.append(buffer);
-			cerr << "Saving predictor " << final_regressor_name << " elapsed time " << elapsed << endl;
-			save_predictor(*(n.all), final_regressor_name, 0);
-			n.model_num ++;
-		}
-		n.save_counter++;
+    // print_example(n.all, &ec);
+    // cout<<"Learn flag is "<<is_learn<<endl;
+    if (n.all->training && is_learn && !n.active && n.all->sd->example_number % 100000 == 0 && strcmp(n.all->final_regressor_name.c_str(),"") != 0) {
+      if (n.save_counter % n.save_freq == 0) {
+	// Save the model every 100000 examples.
+	time_t now;
+	double elapsed;
+	time(&now);
+	elapsed = difftime(now, n.start_time);
+	
+	string final_regressor_name = n.all->final_regressor_name;
+	char buffer[50];
+	sprintf(buffer, ".%d", n.model_num);
+	final_regressor_name.append(buffer);
+	cerr << "Saving predictor " << final_regressor_name << " elapsed time " << elapsed << endl;
+	save_predictor(*(n.all), final_regressor_name, 0);
+	n.model_num ++;
+      }
+      n.save_counter++;
     }
       
     bool shouldOutput = n.all->raw_prediction > 0;
@@ -240,6 +252,11 @@ namespace NN {
           outputStringStream << i << ':' << ec.partial_prediction << ',' << fasttanh (hidden_units[i]);
         }
       }
+    // TODO: remove me
+    //for (unsigned int i = 0; i < n.k; i++)
+    //  cerr << hidden_units[i] << " ";
+    //cerr << endl;
+
     //ld->label = save_label;
     n.all->loss = save_loss;
     n.all->set_minmax = save_set_minmax;
@@ -304,10 +321,14 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       n.output_layer.eta_round = ec.eta_round;
       n.output_layer.eta_global = ec.eta_global;
       n.output_layer.example_t = ec.example_t;
+      //cerr << "N.OUTPUT LAYER BEFORE"<<endl;
+      //print_example(n.all, &n.output_layer);
       if (is_learn)
 	base.learn(n.output_layer, n.k);
       else
 	base.predict(n.output_layer, n.k);
+      //cerr << "N.OUTPUT LAYER AFTER"<<endl;
+      //print_example(n.all, &n.output_layer);
       n.output_layer.ld = 0;
     }
 
@@ -375,6 +396,11 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     ec.partial_prediction = save_partial_prediction;
     ld->prediction = save_final_prediction;
     ec.loss = save_ec_loss;
+    // cerr << "Saving example loss and partial prediction " << ec.loss << " " << ec.partial_prediction << endl;
+    if (is_learn) {
+      n.loss_sum += log(1+exp(-ld->label*ld->prediction));
+      // cerr << "\t\t"<< ec.example_counter << " " << n.loss_sum << endl;
+    }
   }
 
   void copy_examples(example& ec1, const example& ec2) {
@@ -500,18 +526,25 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
   void active_bfgs(nn& n, learner& base) {
     BFGS::bfgs* b = (BFGS::bfgs*) base.learn_fd.data;
+    b->do_end_pass = false;
+    b->final_pass = n.active_passes;
     BFGS::reset_state(*(n.all), *b, true);
-    b->backstep_on = false;
+    b->backstep_on = true;
     for (size_t iters = 0; iters < n.active_passes; iters++) {
       for (size_t i = 0; i < n.pool_pos; i++)
 	passive_predict_or_learn<true>(n, base, *(n.pool[i]));
 
-      bool save_quiet = n.all->quiet;
+      // bool save_quiet = n.all->quiet;
       //n.all->quiet = true;
       //b->regularizers = n.all->reg.weight_vector;
+      // cerr << "Loss Sum "<< n.loss_sum<< endl;
+      b->loss_sum = n.loss_sum;
+      n.loss_sum = 0.0f;
+
       int status = BFGS::process_pass(*(n.all), *b);
+
       //n.all->l2_lambda += n.active_reg_base; // scale regularizer linearly.
-      n.all->quiet = save_quiet;
+      // n.all->quiet = save_quiet;
       if (status != 0) {
 	// then we are done iterating.
 	cerr << "Early termination of bfgs updates"<<endl;
@@ -536,34 +569,37 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       //time(&end);
       //double seconds = difftime(end, start);
       //n.train_time += seconds;
-      //cerr << "BFGS on "<<num_train<<" examples, subsampling rate "<< (float) n.numqueries/(float) n.numexamples<<endl;
+      cerr << "BFGS on "<<n.pool_pos<<" examples, subsampling rate "<< (float) n.numqueries/(float) n.numexamples<<endl;
       //cerr << "BFGS on "<<num_train<<" examples in " << seconds << " seconds"<< endl;
+      // cerr << "BFGS on "<<n.pool_pos<<" examples and "<<n.num_positive<< "positives"<<endl;
+      //cerr << "Total examples seen "<<n.numexamples<<endl;
     }
     else
       for (size_t i = 0; i < n.pool_pos; i++) {
 	passive_predict_or_learn<true>(n, base, *(n.pool[i]));
       }
-	  if (n.save_counter % n.save_freq == 0) {
-		time_t now;	
-		double elapsed;
-		time(&now);
-		elapsed = difftime(now, n.start_time);
-
-		// Save the model
-		string final_regressor_name = n.all->final_regressor_name;
-		char buffer[50];
-		sprintf(buffer, ".%d", n.model_num);
-		final_regressor_name.append(buffer);
-		cerr << "Saving predictor " << final_regressor_name << " elapsed time " << elapsed << endl;
-		save_predictor(*(n.all), final_regressor_name, 0);
-		n.model_num ++;
-	  }
-	  n.save_counter++;
+    if (n.save_models && n.save_counter % n.save_freq == 0) {
+      time_t now;	
+      double elapsed;
+      time(&now);
+      elapsed = difftime(now, n.start_time);
+      
+      // Save the model
+      string final_regressor_name = n.all->final_regressor_name;
+      char buffer[50];
+      sprintf(buffer, ".%d", n.model_num);
+      final_regressor_name.append(buffer);
+      cerr << "Saving predictor " << final_regressor_name << " elapsed time " << elapsed << endl;
+      save_predictor(*(n.all), final_regressor_name, 0);
+      n.model_num ++;
+    }
+    n.save_counter++;
     for (size_t i = 0; i < n.pool_pos; i++) {
       dealloc_example(NULL, *(n.pool[i]));
       free (n.pool[i]);
     }
     n.pool_pos = 0;
+    n.num_positive = 0;
     return 0;
   }
 
@@ -580,6 +616,8 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       // Then we decide immediately whether to train on this example or not
       // We add it to n.pool and when n.pool is full we update the model.
       float gradient = fabs(n.all->loss->first_derivative(n.all->sd, ec.partial_prediction, ((label_data*)ec.ld)->label));
+      //cerr << "EXAMPLE BEFORE UPDATING LOSS"<< endl;
+      //print_example(n.all, &ec);
       ec.loss = n.all->loss->getLoss(n.all->sd, ec.partial_prediction, ((label_data*)ec.ld)->label);
       float queryp = min<float>(gradient, 0.15);
       queryp = max<float>(queryp, min_prob);
@@ -590,12 +628,18 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	example* ec_cpy = (example*) calloc_or_die(1, sizeof(example));
 	ec_cpy->ld = calloc_or_die(1, sizeof(label_data));
 	VW::copy_example_data(false, ec_cpy, &ec, sizeof(label_data), NULL);
-	//float gradient = fabs(n.all->loss->first_derivative(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label));
-	//ec_cpy->loss = n.all->loss->getLoss(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label);
+	//cerr << "EXAMPLE AFTER UPDATING LOSS"<< endl;
+	//print_example(n.all, &ec);
+	//cerr << "COPY" << endl;
+	//print_example(n.all, ec_cpy);
+	// float gradient = fabs(n.all->loss->first_derivative(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label));
+	// ec_cpy->loss = n.all->loss->getLoss(n.all->sd, ec_cpy->partial_prediction, ((label_data*)ec_cpy->ld)->label);
 	
 	n.pool[n.pool_pos++] = ec_cpy;
 	label_data* ld = (label_data*) ec_cpy->ld;
 	ld->weight = 1/queryp;
+	if (ld->label == 1.)
+	  n.num_positive++;
 	n.numqueries++;
       }
       if (n.pool_pos == n.pool_size) {
@@ -642,6 +686,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
   {
     nn* n = (nn*)calloc_or_die(1,sizeof(nn));
     n->all = &all;
+    n->loss_sum = 0.0f;
 
     po::options_description nn_opts("NN options");
     nn_opts.add_options()
@@ -677,10 +722,13 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     }
 
     n->model_num = 0;
-	n->save_counter = 0;
-	n->save_freq = 1;
-	if (vm.count("save_freq"))
-		n->save_freq = vm["save_freq"].as<std::size_t>();
+    n->save_counter = false;
+    n->save_models = 0;
+    n->save_freq = 1;
+    if (vm.count("save_freq")) {
+      n->save_models = true;
+      n->save_freq = vm["save_freq"].as<std::size_t>();
+    }
 
     time (&(n->start_time));
 
@@ -770,7 +818,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
     if (all.l2_lambda != 0)
       n->active_reg_base = all.l2_lambda;
-    all.l2_lambda = 0;
+    // all.l2_lambda = 0;
 
     // diagnostics
     n->train_time = 0;

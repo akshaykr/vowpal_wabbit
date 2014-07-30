@@ -728,7 +728,9 @@ void process_example(vw& all, bfgs& b, example& ec)
 void end_pass(bfgs& b)
 {
   vw* all = b.all;
-  
+
+  if (b.do_end_pass) {
+  cerr << "In end pass" << endl;
   if (b.current_pass <= b.final_pass) 
   {
        if(b.current_pass < b.final_pass)
@@ -780,6 +782,7 @@ void end_pass(bfgs& b)
         b.current_pass ++;
       }   
                 
+  }
   }
 }
 
@@ -950,6 +953,7 @@ learner* setup(vw& all, po::variables_map& vm)
   b->final_pass=all.numpasses;  
   b->no_win_counter = 0;
   b->early_stop_thres = 3;
+  b->do_end_pass = true;
 
   po::options_description bfgs_opts("LBFGS options");
 
