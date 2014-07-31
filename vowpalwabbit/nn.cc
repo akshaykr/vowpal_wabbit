@@ -538,7 +538,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       //n.all->quiet = true;
       //b->regularizers = n.all->reg.weight_vector;
       // cerr << "Loss Sum "<< n.loss_sum<< endl;
-      b->loss_sum = n.loss_sum;
+      // b->loss_sum = n.loss_sum;
       n.loss_sum = 0.0f;
 
       int status = BFGS::process_pass(*(n.all), *b);
