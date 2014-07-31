@@ -445,6 +445,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     }
 
     cerr << "Number of active nodes: " << num_active << endl;
+    cerr << "Total sum: " << total_sum;
     /* If all sizes are zero we are done */
     if (total_sum <= 0) {
       for (size_t i = 0; i < n.pool_pos; i++) {
@@ -463,6 +464,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       memset(to_share, '\0', total_sum);
       memcpy(to_share + prev_sum, b->space.begin, b->space.end - b->space.begin);
       b->space.delete_v();
+      cerr << "Copied local data into buffer, starting allreduce"<<endl;
       all_reduce<char, copy_char>(to_share, total_sum, *n.span_server, n.unique_id, n.total, n.node, *n.socks);
 
       for (size_t i = 0; i < n.pool_pos; i++) {
@@ -484,17 +486,20 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       for (int i = 0; num_read < total_sum; n.pool_pos++, i++) {
 	n.pool[i] = (example*) calloc(1, sizeof(example));
 	n.pool[i]->ld = calloc(1, sizeof(simple_label));
-	//cerr<<"i = "<<i<<" "<<num_read<<endl;
+	cerr<<"i = "<<i<<" num_read "<<num_read<<" total_sum "<<total_sum<<endl;
 	if(read_cached_features(n.all, b, n.pool[i])) {
+	  cerr<<"***********After**************\n";
 	  //if(!save_load_example(*b, true, n.pool[i])) {
-	  // cerr<<"***********After**************\n";
 	  n.pool[i]->in_use = true;	
 	  float weight = ((label_data*) n.pool[i]->ld)->weight;
 	  n.current_t += weight;
-	  // cerr<<"Current_t = "<<n.current_t<<endl;
+	  cerr<<"Current_t = "<<n.current_t<<endl;
 	  n.pool[i]->example_t = n.current_t;	
+	  cerr<<"a";
 	  label_avg += weight * ((label_data*) n.pool[i]->ld)->label;
+	  cerr<<"b";
 	  weight_sum += weight;
+	  cerr<<"c"<<endl;
 	  if(weight > max_weight) {
 	    max_weight = weight;
 	    // max_pos = i;
@@ -504,16 +509,18 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	    // min_pos = i;
 	  }
 	  // print_example(n.all, n.pool[i]);
+	  cerr << "Done reading example: " << n.current_t << endl;
 	}
 	else
 	  break;
-
+	cerr << "end-begin: " << (b->space.end - b->space.begin) << " endloaded-begin: " << (b->endloaded - b->space.begin) << endl;
 	num_read = min(b->space.end - b->space.begin, b->endloaded - b->space.begin);
 	if (num_read == prev_sum)
 	  n.local_begin = i+1;
 	if (num_read == prev_sum + sizes[n.node])
 	  n.local_end = i;
       }
+      cerr << "Finished reading examples" << endl;
       // TODO: does deleting b free to_share?
       // free (to_share);
     }
