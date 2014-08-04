@@ -45,8 +45,8 @@ namespace NN {
     bool finished_setup;
 
     // diagnostics
-    double train_time, subsample_time;
-    //time_t subsample_start_time;
+    double train_time, subsample_time, sync_time;
+    time_t subsample_start_time;
 
     // active flags
     bool active;
@@ -170,12 +170,11 @@ namespace NN {
 
     if (n.all->bfgs)
       n.xsubi = n.save_xsubi;
-    /*
     if (n.active_bfgs) {
       cerr << "Total training time " << n.train_time << endl;
+      cerr << "Total syncing time " << n.sync_time << endl;
       cerr << "Total subsampling time " << n.subsample_time << endl;
     }
-    */
   }
 
   template <bool is_learn>
@@ -527,8 +526,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     }
     free (sizes);
     delete b;
-    cerr << "After Pool Size " << n.pool_pos << endl;
-    // cerr << "DONE WITH SYNC QUERIES" << endl;
+    // cerr << "After Pool Size " << n.pool_pos << endl;
   }
   
 
@@ -564,22 +562,31 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
   }
 
   bool active_update_model(nn& n, learner& base) {
-    if (n.para_active)
+    if (n.para_active) {
+      time_t start,end;
+      time(&start);
       sync_queries(n);
+      time(&end);
+      double seconds = difftime(end, start);
+      n.sync_time += seconds;
+      cerr << "Current Sync time "<< seconds<< " Cumulative sync time " << n.sync_time << endl;
+    }
 
     if (n.pool_pos == 0)
       return 1;
 
     if (n.active_bfgs) {
-      //time_t start,end;
-      //time(&start);
+      time_t start,end;
+      time(&start);
       active_bfgs(n, base);
-      //time(&end);
-      //double seconds = difftime(end, start);
-      //n.train_time += seconds;
-      cerr << "BFGS on "<<n.pool_pos<<" examples, subsampling rate "<< (float) n.numqueries/(float) n.numexamples<<endl;
+      time(&end);
+      double seconds = difftime(end, start);
+      n.train_time += seconds;
+      cerr << "BFGS on "<<n.pool_pos<<" examples, local subsampling rate "<< (float) n.numqueries/(float) n.numexamples<<endl;
+      cerr << "BFGS current time " << seconds << " BFGS cumulative time " << n.train_time << endl;
+      cerr << "Subsampling cumulative time " << n.subsample_time << endl;
       //cerr << "BFGS on "<<num_train<<" examples in " << seconds << " seconds"<< endl;
-      // cerr << "BFGS on "<<n.pool_pos<<" examples and "<<n.num_positive<< "positives"<<endl;
+      //cerr << "BFGS on "<<n.pool_pos<<" examples and "<<n.num_positive<< "positives"<<endl;
       //cerr << "Total examples seen "<<n.numexamples<<endl;
     }
     else
@@ -651,11 +658,11 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	n.numqueries++;
       }
       if (n.pool_pos == n.pool_size) {
-	//time_t end;
-	//time(&end);
-	//n.subsample_time += difftime(end, n.subsample_start_time);
+	time_t end;
+	time(&end);
+	n.subsample_time += difftime(end, n.subsample_start_time);
 	active_update_model(n, base);
-	//time(&(n.subsample_start_time));
+	time(&(n.subsample_start_time));
       }
     }
   }
@@ -831,7 +838,8 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     // diagnostics
     n->train_time = 0;
     n->subsample_time = 0;
-   //time(&(n->subsample_start_time));
+    n->sync_time = 0;
+    time(&(n->subsample_start_time));
 
     n->base = NULL;
     learner* l = new learner(n, all.l, n->k+1);
