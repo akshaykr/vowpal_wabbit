@@ -62,6 +62,7 @@ namespace BFGS {
   void reset_state(vw& all, bfgs& b, bool zero);
   void save_load_regularizer(vw& all, bfgs& b, io_buf& model_file, bool read, bool text);
   void preconditioner_to_regularizer(vw& all, bfgs& b, float regularization);
+  void preconditioner_to_regularizer2(vw& all, bfgs& b, float regularization, float scale);
 }
 
 #endif
