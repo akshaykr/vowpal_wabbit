@@ -55,6 +55,7 @@ namespace NN {
     bool active_bfgs;
     size_t active_passes;
     float active_reg_base; // initial regularization -- this is kind of hacky right now.
+    size_t num_mini_batches;
 
     // pool maintainence
     size_t pool_size;
@@ -84,6 +85,7 @@ namespace NN {
     bool save_models;
 
     learner* base;
+    learner* gd_learner;
     vw* all;
   };
 
@@ -110,6 +112,15 @@ namespace NN {
     cerr<<"End pass = "<<ec->end_pass<<endl;
     cerr<<"Sorted = "<<ec->sorted<<endl;
     cerr<<"In use = "<<ec->in_use<<endl;
+  }
+
+  // DUPLICATED from gd.cc
+  uint32_t ceil_log_2(uint32_t v)
+  {
+    if (v==0)
+      return 0;
+    else 
+      return 1 + ceil_log_2(v >> 1);
   }
 
   static inline float
@@ -443,6 +454,9 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       total_sum += sizes[i];
     }
 
+    if (n.gd_learner)
+      srand(total_sum + n.num_mini_batches);
+
     cerr << "Number of active nodes: " << num_active << endl;
     /* If all sizes are zero we are done */
     if (total_sum <= 0) {
@@ -531,14 +545,39 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
   
 
   void active_bfgs(nn& n, learner& base) {
+    cerr << "Starting optimization" << endl;
     BFGS::bfgs* b = (BFGS::bfgs*) base.learn_fd.data;
     b->do_end_pass = false;
     b->final_pass = n.active_passes;
     BFGS::reset_state(*(n.all), *b, true);
     b->backstep_on = true;
+    bool filtered[n.pool_pos];
+    if (n.gd_learner) {
+      // first round is GD
+      cerr << "Starting SGD" << endl;
+      size_t retained = 0;
+      for (size_t i = 0; i < n.pool_pos; i++) {
+	passive_predict_or_learn<true>(n, *n.gd_learner, *(n.pool[i]));
+	float gradient = fabs(n.all->loss->first_derivative(n.all->sd, n.pool[i]->partial_prediction, ((label_data*)n.pool[i]->ld)->label));
+	float queryp = 2.0*gradient;
+	if (frand48() < queryp) {
+	  filtered[i] = 0;
+	  label_data* ld = (label_data*) n.pool[i]->ld;
+	  ld->weight = ld->weight/queryp;
+	  retained++;
+	} else {
+	  filtered[i] = 1;
+	}
+	// cerr << "Example " << i << " grad: " << gradient << endl;
+      }
+      cerr << "Done with SGD, retaining: " << retained << " out of " << n.pool_pos << endl;
+      BFGS::reset_state(*(n.all), *b, true);
+    }
+    
     for (size_t iters = 0; iters < n.active_passes; iters++) {
       for (size_t i = 0; i < n.pool_pos; i++)
-	passive_predict_or_learn<true>(n, base, *(n.pool[i]));
+	if (n.gd_learner == NULL || !filtered[i])
+	  passive_predict_or_learn<true>(n, base, *(n.pool[i]));
 
       // bool save_quiet = n.all->quiet;
       //n.all->quiet = true;
@@ -615,6 +654,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     }
     n.pool_pos = 0;
     n.num_positive = 0;
+    n.num_mini_batches++;
     return 0;
   }
 
@@ -712,7 +752,8 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       ("active_bfgs", po::value<size_t>(), "do batch bfgs optimization on active pools")
       ("inpass", "Train or test sigmoidal feedforward network with input passthrough.")
       ("dropout", "Train or test sigmoidal feedforward network using dropout.")
-	  ("save_freq", po::value<size_t>(), "how often should we save the model.")
+      ("save_freq", po::value<size_t>(), "how often should we save the model.")
+      ("active_sgd", "Warm start each minibatch with SGD")
       ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
 
     vm = add_options(all, nn_opts);
@@ -732,6 +773,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	n->para_active = 1;
       n->numqueries = 0;
       n->numexamples = 0;
+      n->num_mini_batches = 0;
       if (n->para_active)
 	n->current_t = 0;
     }
@@ -762,6 +804,17 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     if (vm.count("active_bfgs")) {
       n->active_bfgs = 1;
       n->active_passes = vm["active_bfgs"].as<std::size_t>();
+      if (vm.count("active_sgd")) {
+	// IMPORTANT THAT adaptive and invariant are ON.
+	// This will set the stride correctly.
+	learner* gd_learner = GD::setup(all, vm);
+	// Hard code the stride to 4. 
+	all.reg.stride_shift = ceil_log_2(4-1);
+	gd_learner->increment = ((uint64_t)1 << all.reg.stride_shift);
+	n->gd_learner = gd_learner;
+	// n->active_passes -= 1;
+      } else 
+	n->gd_learner = NULL;
     }
 
     if (vm.count("pool_size"))
