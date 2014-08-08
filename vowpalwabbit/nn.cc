@@ -55,6 +55,8 @@ namespace NN {
     bool active_bfgs;
     size_t active_passes;
     float active_reg_base; // initial regularization -- this is kind of hacky right now.
+    float active_reg_scale; // scale factor on memory regularizer. 
+    float subsample_boost;
 
     // pool maintainence
     size_t pool_size;
@@ -182,9 +184,9 @@ namespace NN {
   {
     // print_example(n.all, &ec);
     // cout<<"Learn flag is "<<is_learn<<endl;
-    if (n.all->training && is_learn && !n.active && n.all->sd->example_number % 100000 == 0 && strcmp(n.all->final_regressor_name.c_str(),"") != 0) {
+    if (n.all->training && is_learn && !n.active && n.all->sd->example_number % 10000 == 0 && strcmp(n.all->final_regressor_name.c_str(),"") != 0) {
       if (n.save_counter % n.save_freq == 0) {
-	// Save the model every 100000 examples.
+	// Save the model every 10000 examples.
 	time_t now;
 	double elapsed;
 	time(&now);
@@ -557,7 +559,8 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	break;
       }
     }
-    BFGS::preconditioner_to_regularizer(*(n.all), *b, 0);
+    BFGS::preconditioner_to_regularizer2(*(n.all), *b, 0, n.active_reg_scale);
+    
     // cerr << endl;
   }
 
@@ -631,6 +634,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       // Then we decide immediately whether to train on this example or not
       // We add it to n.pool and when n.pool is full we update the model.
       float gradient = fabs(n.all->loss->first_derivative(n.all->sd, ec.partial_prediction, ((label_data*)ec.ld)->label));
+      gradient = n.subsample_boost*gradient;
       //cerr << "EXAMPLE BEFORE UPDATING LOSS"<< endl;
       //print_example(n.all, &ec);
       ec.loss = n.all->loss->getLoss(n.all->sd, ec.partial_prediction, ((label_data*)ec.ld)->label);
@@ -712,7 +716,9 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       ("active_bfgs", po::value<size_t>(), "do batch bfgs optimization on active pools")
       ("inpass", "Train or test sigmoidal feedforward network with input passthrough.")
       ("dropout", "Train or test sigmoidal feedforward network using dropout.")
-	  ("save_freq", po::value<size_t>(), "how often should we save the model.")
+      ("save_freq", po::value<size_t>(), "how often should we save the model.")
+      ("subsample_boost", po::value<float>(), "Should we boost the subsampling ratio.")
+      ("active_reg_scale", po::value<float>(), "constant in front of memory regularizer.")
       ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
 
     vm = add_options(all, nn_opts);
@@ -744,6 +750,14 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       n->save_models = true;
       n->save_freq = vm["save_freq"].as<std::size_t>();
     }
+
+    n->subsample_boost = 1.0f;
+    if (vm.count("subsample_boost")) 
+      n->subsample_boost = vm["subsample_boost"].as<float>();
+
+    n->active_reg_scale = 1.0f;
+    if (vm.count("active_reg_scale"))
+      n->active_reg_scale = vm["active_reg_scale"].as<float>();
 
     time (&(n->start_time));
 

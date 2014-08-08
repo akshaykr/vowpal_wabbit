@@ -440,6 +440,31 @@ void finalize_preconditioner(vw& all, bfgs& b, float regularization)
   }
 }
 
+void preconditioner_to_regularizer2(vw& all, bfgs& b, float regularization, float scale)
+{
+  uint32_t length = 1 << all.num_bits;
+  size_t stride = 1 << all.reg.stride_shift;
+  weight* weights = all.reg.weight_vector;
+  if (b.regularizers == NULL)
+    {
+      b.regularizers = (weight *)calloc_or_die(2*length, sizeof(weight));
+      
+      if (b.regularizers == NULL)
+	{
+	  cerr << all.program_name << ": Failed to allocate weight array: try decreasing -b <bits>" << endl;
+	  throw exception();
+	}
+      for(uint32_t i = 0; i < length; i++) 
+	b.regularizers[2*i] = scale*weights[stride*i+W_COND] + regularization;
+    }
+  else
+    for(uint32_t i = 0; i < length; i++) 
+      b.regularizers[2*i] = scale*weights[stride*i+W_COND] + b.regularizers[2*i];
+  for(uint32_t i = 0; i < length; i++) 
+      b.regularizers[2*i+1] = weights[stride*i];
+
+}
+
 void preconditioner_to_regularizer(vw& all, bfgs& b, float regularization)
 {
   uint32_t length = 1 << all.num_bits;
