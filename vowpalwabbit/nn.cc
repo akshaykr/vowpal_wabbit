@@ -553,19 +553,22 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     b->final_pass = n.active_passes;
     BFGS::reset_state(*(n.all), *b, true);
     b->backstep_on = true;
-    bool filtered[n.pool_pos];
+    bool* filtered = (bool*) calloc_or_die(n.pool_pos, sizeof(bool));
     if (n.gd_learner) {
       // first round is GD
+      float save_l2 = n.all->l2_lambda;
+      n.all->l2_lambda = 0;
       cerr << "Starting SGD" << endl;
       size_t retained = 0;
       for (size_t i = 0; i < n.pool_pos; i++) {
 	passive_predict_or_learn<true>(n, *n.gd_learner, *(n.pool[i]));
 	float gradient = fabs(n.all->loss->first_derivative(n.all->sd, n.pool[i]->partial_prediction, ((label_data*)n.pool[i]->ld)->label));
 	float queryp = 2.0*gradient;
+	queryp = max<float>(queryp, 0.1);
 	if (frand48() < queryp) {
 	  filtered[i] = 0;
 	  label_data* ld = (label_data*) n.pool[i]->ld;
-	  ld->weight = ld->weight/queryp;
+	  // ld->weight = ld->weight/queryp;
 	  retained++;
 	} else {
 	  filtered[i] = 1;
@@ -573,6 +576,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	// cerr << "Example " << i << " grad: " << gradient << endl;
       }
       cerr << "Done with SGD, retaining: " << retained << " out of " << n.pool_pos << endl;
+      n.all->l2_lambda = save_l2;
       BFGS::reset_state(*(n.all), *b, true);
     }
     
@@ -598,6 +602,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	break;
       }
     }
+    free (filtered);
     BFGS::preconditioner_to_regularizer2(*(n.all), *b, 0, n.active_reg_scale);
     
     // cerr << endl;
