@@ -469,7 +469,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
     cerr << "Number of active nodes: " << num_active << " Bytes: " << total_sum << endl;
     /* If all sizes are zero we are done */
-    if (total_sum <= 0) {
+    if (total_sum <= 0 || num_active <= n.total/2) {
       for (size_t i = 0; i < n.pool_pos; i++) {
 	// at this point we can free our examples because we cached them and will
 	// rewrite them to the pool. 
@@ -721,7 +721,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     n.curr_sifted++;
     passive_predict_or_learn<false>(n, base, ec);
 
-    if (is_learn) {
+    if (is_learn && !n.all_done) {
       // Then we decide immediately whether to train on this example or not
       // We add it to n.pool and when n.pool is full we update the model.
       float gradient = fabs(n.all->loss->first_derivative(n.all->sd, ec.partial_prediction, ((label_data*)ec.ld)->label));
@@ -759,7 +759,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	time(&end);
 	n.subsample_time += difftime(end, n.subsample_start_time);
 	n.curr_subsample_time = difftime(end, n.subsample_start_time);
-	active_update_model(n, base);
+	n.all_done = active_update_model(n, base);
 	time(&(n.subsample_start_time));
 	n.curr_sifted = 0;
       }
@@ -776,7 +776,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 
   void finish(nn& n)
   {
-    if (n.para_active) {
+    if (n.para_active && !n.all_done) {
       if (n.all->l == NULL) 
 	cerr << "BASE LEARNER IS NULL\n";
       while (!active_update_model(n, *(n.base)));
@@ -860,6 +860,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     time (&(n->start_time));
 
     if(n->para_active) {
+      n->all_done = false;
       n->span_server = new std::string(all.span_server);
       n->total = all.total;
       n->unique_id = all.unique_id;
