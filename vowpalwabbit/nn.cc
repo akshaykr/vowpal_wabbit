@@ -29,7 +29,7 @@ namespace NN {
   const float hidden_max_activation = 3;
   const int nn_constant = 533357803;
   //  const float min_prob = 0.0069f;
-  const float min_prob = 0.003f;
+  const float min_prob = 0.0003f;
 
   struct nn {
     float loss_sum;
@@ -58,6 +58,7 @@ namespace NN {
     float active_reg_scale; // scale factor on memory regularizer. 
     float subsample_boost;
     size_t num_mini_batches;
+    bool retain_positives;
 
     // pool maintainence
     size_t pool_size;
@@ -88,6 +89,7 @@ namespace NN {
 
     learner* base;
     learner* gd_learner;
+    weight* gd_weights;
     vw* all;
   };
 
@@ -459,7 +461,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     if (n.gd_learner)
       srand(total_sum + n.num_mini_batches);
 
-    cerr << "Number of active nodes: " << num_active << endl;
+    cerr << "Number of active nodes: " << num_active << " Bytes: " << total_sum << endl;
     /* If all sizes are zero we are done */
     if (total_sum <= 0) {
       for (size_t i = 0; i < n.pool_pos; i++) {
@@ -542,7 +544,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     }
     free (sizes);
     delete b;
-    // cerr << "After Pool Size " << n.pool_pos << endl;
+    cerr << "After Pool Size " << n.pool_pos << endl;
   }
   
 
@@ -555,28 +557,39 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     b->backstep_on = true;
     bool* filtered = (bool*) calloc_or_die(n.pool_pos, sizeof(bool));
     if (n.gd_learner) {
+      
+      for (size_t i = 0; i <= ((1 << n.all->num_bits) - 1); i++)
+	n.all->reg.weight_vector[4*i + 1] = n.gd_weights[i];
+
       // first round is GD
       float save_l2 = n.all->l2_lambda;
       n.all->l2_lambda = 0;
       cerr << "Starting SGD" << endl;
       size_t retained = 0;
+      size_t num_positive = 0;
       for (size_t i = 0; i < n.pool_pos; i++) {
 	passive_predict_or_learn<true>(n, *n.gd_learner, *(n.pool[i]));
 	float gradient = fabs(n.all->loss->first_derivative(n.all->sd, n.pool[i]->partial_prediction, ((label_data*)n.pool[i]->ld)->label));
 	float queryp = 2.0*gradient;
-	queryp = max<float>(queryp, 0.1);
+	queryp = max<float>(queryp, 1.0);
 	if (frand48() < queryp) {
 	  filtered[i] = 0;
 	  label_data* ld = (label_data*) n.pool[i]->ld;
 	  // ld->weight = ld->weight/queryp;
 	  retained++;
+	  if (ld->label == 1.)
+	    num_positive++;
 	} else {
 	  filtered[i] = 1;
 	}
 	// cerr << "Example " << i << " grad: " << gradient << endl;
       }
-      cerr << "Done with SGD, retaining: " << retained << " out of " << n.pool_pos << endl;
+      cerr << "Done with SGD, retaining: " << retained << " out of " << n.pool_pos << " num positive " << num_positive << endl;
       n.all->l2_lambda = save_l2;
+      
+      for (size_t i = 0; i <= ((1 << n.all->num_bits) - 1); i++)
+	n.gd_weights[i] = n.all->reg.weight_vector[4*i + 1];
+	
       BFGS::reset_state(*(n.all), *b, true);
     }
     
@@ -603,7 +616,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       }
     }
     free (filtered);
-    BFGS::preconditioner_to_regularizer2(*(n.all), *b, 0, n.active_reg_scale);
+    BFGS::preconditioner_to_regularizer2(*(n.all), *b, n.all->l2_lambda, n.active_reg_scale);
     
     // cerr << endl;
   }
@@ -633,7 +646,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       cerr << "BFGS current time " << seconds << " BFGS cumulative time " << n.train_time << endl;
       cerr << "Subsampling cumulative time " << n.subsample_time << endl;
       //cerr << "BFGS on "<<num_train<<" examples in " << seconds << " seconds"<< endl;
-      //cerr << "BFGS on "<<n.pool_pos<<" examples and "<<n.num_positive<< "positives"<<endl;
+      cerr << "BFGS on "<<n.pool_pos<<" examples and "<<n.num_positive<< "positives"<<endl;
       //cerr << "Total examples seen "<<n.numexamples<<endl;
     }
     else
@@ -684,8 +697,10 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       //print_example(n.all, &ec);
       ec.loss = n.all->loss->getLoss(n.all->sd, ec.partial_prediction, ((label_data*)ec.ld)->label);
       float queryp = min<float>(gradient, 0.15);
+      if (n.retain_positives && ((label_data*) ec.ld)->label == 1.0)
+	queryp = gradient;
       queryp = max<float>(queryp, min_prob);
-      // cerr << "Processing example queryp: "<<queryp<< " rand: " << r <<" pool_pos: "<< n.pool_pos << " pool_size: "<< n.pool_size<<endl;
+      // cerr << "Processing example queryp: "<<queryp<< " label: " << ((label_data*) ec.ld)->label << endl;
       if (frand48() < queryp) {
 	// cerr << "Adding example to pool"<<endl;
 	// Copy the example and add it to the pool.
@@ -765,6 +780,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       ("subsample_boost", po::value<float>(), "Should we boost the subsampling ratio.")
       ("active_reg_scale", po::value<float>(), "constant in front of memory regularizer.")
       ("active_sgd", "Warm start each minibatch with SGD")
+      ("retain_positives", "Retain all positive examples")
       ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
 
     vm = add_options(all, nn_opts);
@@ -831,10 +847,17 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	all.reg.stride_shift = ceil_log_2(4-1);
 	gd_learner->increment = ((uint64_t)1 << all.reg.stride_shift);
 	n->gd_learner = gd_learner;
+	n->gd_weights = (weight*) calloc_or_die(1 << all.num_bits, sizeof(float));
+	for (size_t i = 0; i <= ((1 << all.num_bits) - 1); i++)
+	  n->gd_weights[i] = 1.0f;
 	// n->active_passes -= 1;
       } else 
 	n->gd_learner = NULL;
     }
+
+    n->retain_positives = false;
+    if (vm.count("retain_positives"))
+	n->retain_positives = true;
 
     if (vm.count("pool_size"))
       n->pool_size = vm["pool_size"].as<std::size_t>();
