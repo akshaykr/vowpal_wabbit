@@ -47,6 +47,8 @@ namespace NN {
     // diagnostics
     double train_time, subsample_time, sync_time;
     time_t subsample_start_time;
+    time_t curr_subsample_time;
+    size_t curr_sifted; 
 
     // active flags
     bool active;
@@ -433,6 +435,10 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     t1 += t2;
   }
 
+  void add_double(double& t1, const double& t2) {
+    t1 += t2;
+  }
+
   void sync_queries(nn& n) {
     io_buf *b = new io_buf();
     
@@ -571,11 +577,11 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	passive_predict_or_learn<true>(n, *n.gd_learner, *(n.pool[i]));
 	float gradient = fabs(n.all->loss->first_derivative(n.all->sd, n.pool[i]->partial_prediction, ((label_data*)n.pool[i]->ld)->label));
 	float queryp = 2.0*gradient;
-	queryp = max<float>(queryp, 1.0);
+	queryp = max<float>(queryp, 0.1);
 	if (frand48() < queryp) {
 	  filtered[i] = 0;
 	  label_data* ld = (label_data*) n.pool[i]->ld;
-	  // ld->weight = ld->weight/queryp;
+	  ld->weight = ld->weight/queryp;
 	  retained++;
 	  if (ld->label == 1.)
 	    num_positive++;
@@ -617,9 +623,34 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     }
     free (filtered);
     BFGS::preconditioner_to_regularizer2(*(n.all), *b, n.all->l2_lambda, n.active_reg_scale);
+    // Get L_2^2 of regularizer
+    double norm = 0.0f;
+    uint32_t length = 1 << n.all->num_bits;
+    for (uint32_t i = 0; i < length; i++)
+      norm += b->regularizers[2*i]*b->regularizers[2*i];
+    cerr << "Regularizer squared norm " << norm << endl;
     
     // cerr << endl;
   }
+
+  void sync_time(nn& n, double seconds) {
+    // Sync n.curr_sifted, n.curr_subsample_time, and seconds;
+    double* buffer = (double *) calloc_or_die(3*n.total, sizeof(double));
+    for (size_t i = 0; i < n.total; i++) {
+      buffer[3*i] = 0;
+      buffer[3*i+1] = 0;
+      buffer[3*i+2] = 0;
+    }
+    
+    buffer[3*n.node] = seconds;
+    buffer[3*n.node+1] = n.curr_subsample_time;
+    buffer[3*n.node+2] = (double) n.curr_sifted;
+    all_reduce<double, add_double>(buffer, 3*n.total, *n.span_server, n.unique_id, n.total, n.node, *n.socks);
+    for (size_t i = 0; i < n.total; i++)
+      cerr << "Sync diagnostics for node " << i << " current sync time " << buffer[3*i] << " current sift time " << buffer[3*i+1] << " examples sifted " << buffer[3*i+2] << endl;
+    free(buffer);
+  }
+
 
   bool active_update_model(nn& n, learner& base) {
     if (n.para_active) {
@@ -630,6 +661,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       double seconds = difftime(end, start);
       n.sync_time += seconds;
       cerr << "Current Sync time "<< seconds<< " Cumulative sync time " << n.sync_time << endl;
+      sync_time(n, seconds);
     }
 
     if (n.pool_pos == 0)
@@ -686,6 +718,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     if (n.base == NULL)
       n.base = &base;
     n.numexamples++;
+    n.curr_sifted++;
     passive_predict_or_learn<false>(n, base, ec);
 
     if (is_learn) {
@@ -725,8 +758,10 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	time_t end;
 	time(&end);
 	n.subsample_time += difftime(end, n.subsample_start_time);
+	n.curr_subsample_time = difftime(end, n.subsample_start_time);
 	active_update_model(n, base);
 	time(&(n.subsample_start_time));
+	n.curr_sifted = 0;
       }
     }
   }
@@ -935,6 +970,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
     n->subsample_time = 0;
     n->sync_time = 0;
     time(&(n->subsample_start_time));
+    n->curr_sifted = 0;
 
     n->base = NULL;
     learner* l = new learner(n, all.l, n->k+1);
