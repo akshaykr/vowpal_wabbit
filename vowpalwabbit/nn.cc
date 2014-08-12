@@ -64,6 +64,7 @@ namespace NN {
 
     // pool maintainence
     size_t pool_size;
+    size_t max_sift;
     size_t pool_pos;
     size_t num_positive;
 
@@ -754,7 +755,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
 	  n.num_positive++;
 	n.numqueries++;
       }
-      if (n.pool_pos == n.pool_size) {
+      if (n.pool_pos == n.pool_size || n.curr_sifted == n.max_sift) {
 	time_t end;
 	time(&end);
 	n.subsample_time += difftime(end, n.subsample_start_time);
@@ -816,6 +817,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       ("active_reg_scale", po::value<float>(), "constant in front of memory regularizer.")
       ("active_sgd", "Warm start each minibatch with SGD")
       ("retain_positives", "Retain all positive examples")
+      ("max_sift", po::value<size_t>(), "A cap on the number of examples to sift")
       ("meanfield", "Train or test sigmoidal feedforward network using mean field.");
 
     vm = add_options(all, nn_opts);
@@ -848,6 +850,10 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       n->save_models = true;
       n->save_freq = vm["save_freq"].as<std::size_t>();
     }
+
+    n->max_sift = 0;
+    if (vm.count("max_sift"))
+      n->max_sift = vm["max_sift"].as<std::size_t>();
 
     n->subsample_boost = 1.0f;
     if (vm.count("subsample_boost")) 
