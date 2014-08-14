@@ -600,6 +600,7 @@ CONVERSE: // That's right, I'm using goto.  So sue me.
       BFGS::reset_state(*(n.all), *b, true);
     }
     
+    // TODO: throw away examples rather than make bool array. 
     for (size_t iters = 0; iters < n.active_passes; iters++) {
       for (size_t i = 0; i < n.pool_pos; i++)
 	if (n.gd_learner == NULL || !filtered[i])
