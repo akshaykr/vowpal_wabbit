@@ -1,21 +1,4 @@
-/*
-Copyright (c) by respective owners including Yahoo!, Microsoft, and
-individual contributors. All rights reserved.  Released under a BSD
-license as described in the file LICENSE.
-*/
-
-#pragma once
-
 #include <memory>
-#include <string>
-#include <cstddef>
-#include "v_array.h"
-
-#ifndef _WIN32
-#include <sys/types.h>
-#else
-#define ssize_t int64_t
-#endif
 
 typedef float feature_value;
 typedef uint64_t feature_index;
@@ -250,9 +233,6 @@ struct features
     sum_feat_sq = 0.f;
   }
 
-  // if one wants to add proper destructor for features, make sure to update ezexample_predict::~ezexample_predict();
-  // ~features() { ... }
-
   inline size_t size() const { return values.size(); }
 
   inline bool nonempty() const { return !values.empty(); }
@@ -271,11 +251,11 @@ struct features
 
   iterator end() { return iterator(values.end(), indicies.end()); }
 
-  void clear()
+  void erase()
   { sum_feat_sq = 0.f;
-    values.clear();
-    indicies.clear();
-    space_names.clear();
+    values.erase();
+    indicies.erase();
+    space_names.erase();
   }
 
   void truncate_to(const features_value_iterator& pos)
@@ -351,3 +331,4 @@ struct features
     sum_feat_sq = src.sum_feat_sq;
   }
 };
+

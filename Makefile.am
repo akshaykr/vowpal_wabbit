@@ -11,6 +11,7 @@ nobase_include_HEADERS = vowpalwabbit/allreduce.h \
 	vowpalwabbit/parse_example.h \
 	vowpalwabbit/floatbits.h \
 	vowpalwabbit/global_data.h \
+	vowpalwabbit/hash.h \
 	vowpalwabbit/io_buf.h \
 	vowpalwabbit/learner.h \
 	vowpalwabbit/loss_functions.h \

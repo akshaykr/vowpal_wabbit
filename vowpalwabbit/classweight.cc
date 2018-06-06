@@ -2,60 +2,65 @@
 #include "reductions.h"
 using namespace std;
 
-namespace CLASSWEIGHTS
-{
+
 struct classweights
 {
-  std::unordered_map<uint32_t, float> weights;
+  std::unordered_map<int, double> weights;
+
+  classweights(std::string const& source)
+  {
+    load_string(source);
+  }
 
   void load_string(std::string const& source)
   {
     std::stringstream ss(source);
     std::string item;
-    while (std::getline(ss, item, ','))
-    {
+    while (std::getline(ss, item, ',')) {
       std::stringstream inner_ss(item);
       std::string klass;
       std::string weight;
       std::getline(inner_ss, klass, ':');
       std::getline(inner_ss, weight, ':');
 
-      if (!klass.size() || !weight.size())
-      {
+      if (!klass.size() || !weight.size()) {
         THROW("error: while parsing --classweight " << item);
       }
 
       int klass_int = std::stoi(klass);
-      float weight_double = std::stof(weight);
+      double weight_double = std::stod(weight);
 
       weights[klass_int] = weight_double;
     }
   }
 
-  float get_class_weight(uint32_t klass)
-  {
+  double get_class_weight(int klass) {
     auto got = weights.find(klass);
     if ( got == weights.end() )
-      return 1.0f;
+      return 1.0;
     else
       return got->second;
   }
+
+  size_t size() {
+    return weights.size();
+  }
+
 };
 
 template <bool is_learn, int pred_type>
-static void predict_or_learn(classweights& cweights, LEARNER::single_learner& base, example& ec)
+static void predict_or_learn(classweights& cweights, LEARNER::base_learner& base, example& ec)
 {
-  switch (pred_type)
-  {
-  case prediction_type::scalar:
-    ec.weight *= cweights.get_class_weight((uint32_t)ec.l.simple.label);
-    break;
-  case prediction_type::multiclass:
-    ec.weight *= cweights.get_class_weight(ec.l.multi.label);
-    break;
-  default:
-    // suppress the warning
-    break;
+  switch (pred_type) {
+    case prediction_type::scalar:
+      ec.weight *= cweights.get_class_weight(ec.l.simple.label);
+      break;
+    case prediction_type::multiclass:
+      ec.weight *= cweights.get_class_weight(ec.l.multi.label);
+      break;
+    default:
+      // suppress the warning
+      break;
   }
 
   if (is_learn)
@@ -64,34 +69,31 @@ static void predict_or_learn(classweights& cweights, LEARNER::single_learner& ba
     base.predict(ec);
 }
 
-void finish(classweights& data) { data.weights.~unordered_map();}
-}
-
-using namespace CLASSWEIGHTS;
-
-LEARNER::base_learner* classweight_setup(arguments& arg)
+LEARNER::base_learner* classweight_setup(vw& all)
 {
-  vector<string> classweight_array;
-  auto cweights = scoped_calloc_or_throw<classweights>();
-  if (arg.new_options("importance weight classes")
-      .critical_vector<string>("classweight", po::value<vector<string> >(&classweight_array), "importance weight multiplier for class", false).missing())
+  string classweight;
+  new_options(all)
+   ("classweight", po::value<std::string>(&classweight))
+  ;
+  add_options(all);
+
+  classweights* cweights;
+  po::variables_map& vm = all.vm;
+
+  if (vm.count("classweight"))
+  { *all.file_options << " --classweight " << classweight << ' ';
+    cweights = new classweights(classweight);
+    if (!all.quiet)
+      all.trace_message << "parsed " << cweights->size() << " class weights" << endl;
+  } else
     return nullptr;
 
-  for (auto& s : classweight_array)
-    cweights->load_string(s);
+  LEARNER::base_learner* base = setup_base(all);
 
-  if (!arg.all->quiet)
-    arg.trace_message << "parsed " << cweights->weights.size() << " class weights" << endl;
-
-  LEARNER::single_learner* base = as_singleline(setup_base(arg));
-
-  LEARNER::learner<classweights,example>* ret;
   if (base->pred_type == prediction_type::scalar)
-    ret = &LEARNER::init_learner<classweights>(cweights, base, predict_or_learn<true,prediction_type::scalar>, predict_or_learn<false,prediction_type::scalar>);
+    return make_base(LEARNER::init_learner<classweights>(cweights, base, predict_or_learn<true,prediction_type::scalar>, predict_or_learn<false,prediction_type::scalar>));
   else if (base->pred_type == prediction_type::multiclass)
-    ret = &LEARNER::init_learner<classweights>(cweights, base, predict_or_learn<true,prediction_type::multiclass>, predict_or_learn<false,prediction_type::multiclass>);
+    return make_base(LEARNER::init_learner<classweights>(cweights, base, predict_or_learn<true,prediction_type::multiclass>, predict_or_learn<false,prediction_type::multiclass>));
   else
     THROW("--classweight not implemented for this type of prediction");
-  ret->set_finish(finish);
-  return make_base(*ret);
 }

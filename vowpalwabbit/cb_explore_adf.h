@@ -5,12 +5,9 @@ license as described in the file LICENSE.
 */
 #pragma once
 
-#include<vector>
-struct example;
-
-LEARNER::base_learner* cb_explore_adf_setup(arguments& arg);
+LEARNER::base_learner* cb_explore_adf_setup(vw& all);
 
 namespace CB_EXPLORE_ADF
 {
-  example* test_adf_sequence(std::vector<example*>& ec_seq);
+example* test_adf_sequence(v_array<example*>& ec_seq);
 }

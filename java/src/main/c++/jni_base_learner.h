@@ -2,7 +2,6 @@
 #define VW_BASE_LEARNER_H
 
 #include <jni.h>
-#include <functional>
 
 void throw_java_exception(JNIEnv *env, const char* name, const char* msg);
 void rethrow_cpp_exception_as_java_exception(JNIEnv *env);
@@ -27,14 +26,14 @@ T base_predict(
 { T result = 0;
   try
   { if (learn)
-      vwInstance->learn(*ex);
+      vwInstance->l->learn(*ex);
     else
-      vwInstance->predict(*ex);
+      vwInstance->l->predict(*ex);
 
     if (predict)
       result = predictor(ex, env);
 
-    vwInstance->finish_example(*ex);
+    vwInstance->l->finish_example(*vwInstance, *ex);
   }
   catch (...)
   { rethrow_cpp_exception_as_java_exception(env);
@@ -63,28 +62,20 @@ T base_predict(
   const F& predictor)
 { vw* vwInstance = (vw*)vwPtr;
   int example_count = env->GetArrayLength(example_strings);
-  multi_ex ex_coll;   // When doing multiline prediction the final result is stored in the FIRST example parsed.
+
+  // When doing multiline prediction the final result is stored in the FIRST example parsed.
   example* first_example = NULL;
   for (int i=0; i<example_count; i++)
   { jstring example_string = (jstring) (env->GetObjectArrayElement(example_strings, i));
     example* ex = read_example(env, example_string, vwInstance);
-    ex_coll.push_back(ex);
+    base_predict<T>(env, ex, learn, vwInstance, predictor, false);
     if (i == 0)
       first_example = ex;
   }
   env->DeleteLocalRef(example_strings);
 
-  try
-  { if (learn)
-      vwInstance->learn(ex_coll);
-    else
-      vwInstance->predict(ex_coll);
-  }
-  catch (...)
-  { rethrow_cpp_exception_as_java_exception(env);
-  }
-
-  vwInstance->finish_example(ex_coll);
+  example* ex = read_example("\0", vwInstance);
+  base_predict<T>(env, ex, learn, vwInstance, predictor, false);
 
   return predictor(first_example, env);
 }

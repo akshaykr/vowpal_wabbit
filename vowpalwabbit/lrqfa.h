@@ -1,1 +1,1 @@
-LEARNER::base_learner* lrqfa_setup(arguments& arg);
+LEARNER::base_learner* lrqfa_setup(vw& all);

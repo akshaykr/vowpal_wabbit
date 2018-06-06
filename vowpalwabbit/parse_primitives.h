@@ -4,7 +4,7 @@ individual contributors. All rights reserved.  Released under a BSD
 license as described in the file LICENSE.
  */
 #pragma once
-#include <iostream>
+#include<iostream>
 #include <stdint.h>
 #include <math.h>
 #include "v_array.h"
@@ -61,28 +61,27 @@ hash_func_t getHasher(const std::string& s);
 //  - much faster (around 50% but depends on the string to parse)
 //  - less error control, but utilised inside a very strict parser
 //    in charge of error detection.
-inline float parseFloat(char * p, char **end, char * endLine = nullptr)
+inline float parseFloat(char * p, char **end)
 { char* start = p;
-  bool endLine_is_null = endLine == nullptr;
 
   if (!*p)
   { *end = p;
     return 0;
   }
   int s = 1;
-  while ((*p == ' ') && (endLine_is_null || p < endLine)) p++;
+  while (*p == ' ') p++;
 
   if (*p == '-')
   { s = -1; p++;
   }
 
   float acc = 0;
-  while (*p >= '0' && *p <= '9' && (endLine_is_null || p < endLine))
+  while (*p >= '0' && *p <= '9')
     acc = acc * 10 + *p++ - '0';
 
   int num_dec = 0;
   if (*p == '.')
-  { while (*(++p) >= '0' && *p <= '9' && (endLine_is_null || p < endLine))
+  { while (*(++p) >= '0' && *p <= '9')
     { if (num_dec < 35)
       { acc = acc *10 + (*p - '0');
         num_dec++;
@@ -91,18 +90,18 @@ inline float parseFloat(char * p, char **end, char * endLine = nullptr)
   }
 
   int exp_acc = 0;
-  if((*p == 'e' || *p == 'E') && (endLine_is_null || p < endLine))
+  if(*p == 'e' || *p == 'E')
   { p++;
     int exp_s = 1;
-    if (*p == '-' && (endLine_is_null || p < endLine))
+    if (*p == '-')
     { exp_s = -1; p++;
     }
-    while (*p >= '0' && *p <= '9' && (endLine_is_null || p < endLine))
+    while (*p >= '0' && *p <= '9')
       exp_acc = exp_acc * 10 + *p++ - '0';
     exp_acc *= exp_s;
 
   }
-  if (*p == ' ' || *p == '\n' || *p == '\t' || p == endLine)//easy case succeeded.
+  if (*p == ' ' || *p == '\n' || *p == '\t')//easy case succeeded.
   { acc *= powf(10,(float)(exp_acc-num_dec));
     *end = p;
     return s * acc;

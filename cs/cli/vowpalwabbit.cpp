@@ -112,7 +112,7 @@ VowpalWabbitPerformanceStatistics^ VowpalWabbit::PerformanceStatistics::get()
 }
 
 uint64_t VowpalWabbit::HashSpace(String^ s)
-{ auto newHash = m_hasher(s, 0);
+{ auto newHash = m_hasher(s, hash_base);
 
 #ifdef _DEBUG
   auto oldHash = HashSpaceNative(s);
@@ -159,46 +159,6 @@ uint64_t VowpalWabbit::HashFeatureNative(String^ s, uint64_t u)
   }
 }
 
-void VowpalWabbit::Learn(List<VowpalWabbitExample^>^ examples)
-{
-  multi_ex ex_coll;
-  try
-  {
-    for each (auto ex in examples)
-    {
-      example* pex = ex->m_example;
-      ex_coll.push_back(pex);
-    }
-
-    m_vw->learn(ex_coll);
-
-    // as this is not a ring-based example it is not freed
-    as_multiline(m_vw->l)->finish_example(*m_vw, ex_coll);
-  }
-  CATCHRETHROW
-  finally{ }
-}
-
-void VowpalWabbit::Predict(List<VowpalWabbitExample^>^ examples)
-{
-  multi_ex ex_coll;
-  try
-  {
-    for each (auto ex in examples)
-    {
-      example* pex = ex->m_example;
-      ex_coll.push_back(pex);
-    }
-
-    as_multiline(m_vw->l)->predict(ex_coll);
-
-    // as this is not a ring-based example it is not freed
-    as_multiline(m_vw->l)->finish_example(*m_vw, ex_coll);
-  }
-  CATCHRETHROW
-    finally{ }
-}
-
 void VowpalWabbit::Learn(VowpalWabbitExample^ ex)
 {
 #if _DEBUG
@@ -208,10 +168,10 @@ void VowpalWabbit::Learn(VowpalWabbitExample^ ex)
 #endif
 
   try
-  { m_vw->learn(*ex->m_example);
+  { m_vw->learn(ex->m_example);
 
     // as this is not a ring-based example it is not free'd
-    as_singleline(m_vw->l)->finish_example(*m_vw, *ex->m_example);
+    m_vw->l->finish_example(*m_vw, *ex->m_example);
   }
   CATCHRETHROW
 }
@@ -227,12 +187,12 @@ generic<typename T> T VowpalWabbit::Learn(VowpalWabbitExample^ ex, IVowpalWabbit
 #endif
 
   try
-  { m_vw->learn(*ex->m_example);
+  { m_vw->learn(ex->m_example);
 
     auto prediction = predictionFactory->Create(m_vw, ex->m_example);
 
     // as this is not a ring-based example it is not free'd
-    as_singleline(m_vw->l)->finish_example(*m_vw, *ex->m_example);
+    m_vw->l->finish_example(*m_vw, *ex->m_example);
 
     return prediction;
   }
@@ -247,10 +207,10 @@ void VowpalWabbit::Predict(VowpalWabbitExample^ ex)
 #endif
 
   try
-  { as_singleline(m_vw->l)->predict(*ex->m_example);
+  { m_vw->l->predict(*ex->m_example);
 
     // as this is not a ring-based example it is not free'd
-  as_singleline(m_vw->l)->finish_example(*m_vw, *ex->m_example);
+    m_vw->l->finish_example(*m_vw, *ex->m_example);
   }
   CATCHRETHROW
 }
@@ -263,12 +223,12 @@ generic<typename T> T VowpalWabbit::Predict(VowpalWabbitExample^ ex, IVowpalWabb
 #endif
 
   try
-  { as_singleline(m_vw->l)->predict(*ex->m_example);
+  { m_vw->l->predict(*ex->m_example);
 
     auto prediction = predictionFactory->Create(m_vw, ex->m_example);
 
     // as this is not a ring-based example it is not free'd
-    as_singleline(m_vw->l)->finish_example(*m_vw, *ex->m_example);
+    m_vw->l->finish_example(*m_vw, *ex->m_example);
 
     return prediction;
   }
@@ -517,15 +477,6 @@ generic<typename T> T VowpalWabbit::Predict(String^ line, IVowpalWabbitPredictio
   }
 }
 
-
-void VowpalWabbit::CacheEmptyLine()
-{
-	auto empty = GetOrCreateNativeExample();
-	empty->MakeEmpty(this);
-	ReturnExampleToPool(empty);
-}
-
-
 void VowpalWabbit::Learn(IEnumerable<String^>^ lines)
 {
 #if _DEBUG
@@ -539,12 +490,14 @@ void VowpalWabbit::Learn(IEnumerable<String^>^ lines)
   { for each (auto line in lines)
     { auto ex = ParseLine(line);
       examples->Add(ex);
+
+      Learn(ex);
     }
 
-		// Need to add an empty line to cache file
-		CacheEmptyLine();
-
-    Learn(examples);
+    auto empty = GetOrCreateNativeExample();
+    examples->Add(empty);
+    empty->MakeEmpty(this);
+    Learn(empty);
   }
   finally
   { for each (auto ex in examples)
@@ -566,12 +519,14 @@ void VowpalWabbit::Predict(IEnumerable<String^>^ lines)
   { for each (auto line in lines)
     { auto ex = ParseLine(line);
       examples->Add(ex);
+
+      Predict(ex);
     }
 
-    // Need to add an empty line to cache file
-    CacheEmptyLine();
-
-    Predict(examples);
+    auto empty = GetOrCreateNativeExample();
+    examples->Add(empty);
+    empty->MakeEmpty(this);
+    Predict(empty);
   }
   finally
   { for each (auto ex in examples)
@@ -763,8 +718,8 @@ size_t hashstring(String^ s, size_t u)
 Func<String^, size_t, size_t>^ VowpalWabbit::GetHasher()
 { //feature manipulation
   string hash_function("strings");
-  if (m_vw->opts_n_args.vm.count("hash"))
-  { hash_function = m_vw->opts_n_args.vm["hash"].as<string>();
+  if (m_vw->vm.count("hash"))
+  { hash_function = m_vw->vm["hash"].as<string>();
   }
 
   if (hash_function == "strings")
@@ -835,7 +790,7 @@ cli::array<List<VowpalWabbitFeature^>^>^ VowpalWabbit::GetTopicAllocation(int to
   auto allocation = gcnew cli::array<List<VowpalWabbitFeature^>^>(K);
 
   // TODO: better way of peaking into lda?
-  auto lda_rho = m_vw->opts_n_args.vm["lda_rho"].as<float>();
+  auto lda_rho = m_vw->vm["lda_rho"].as<float>();
 
   std::vector<feature> top_weights;
   // over topics
@@ -862,7 +817,7 @@ cli::array<cli::array<float>^>^ VowpalWabbit::FillTopicAllocation(T& weights)
 		allocation[k] = gcnew cli::array<float>((int)length);
 
 	// TODO: better way of peaking into lda?
-	auto lda_rho = m_vw->opts_n_args.vm["lda_rho"].as<float>();
+	auto lda_rho = m_vw->vm["lda_rho"].as<float>();
 
 	for (auto iter = weights.begin(); iter != weights.end(); ++iter)
 	{   // over topics

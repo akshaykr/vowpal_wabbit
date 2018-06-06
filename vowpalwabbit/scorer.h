@@ -1,1 +1,1 @@
-LEARNER::base_learner* scorer_setup(arguments& arg);
+LEARNER::base_learner* scorer_setup(vw& all);

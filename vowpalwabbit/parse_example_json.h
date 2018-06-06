@@ -410,20 +410,19 @@ struct MultiState : BaseState<audit>
 	BaseState<audit>* StartArray(Context<audit>& ctx)
 	{
 		// mark shared example
-		if (ctx.all->label_type == label_type::cb)
-      {
-        CB::label* ld = &ctx.ex->l.cb;
-        CB::cb_class f;
+		// TODO: how to check if we're in CB mode (--cb?)
+		// if (ctx.all->p->lp == CB::cb_label) // not sure how to compare
+		{
+			CB::label* ld = (CB::label*)&ctx.ex->l;
+			CB::cb_class f;
 
-        f.partial_prediction = 0.;
-        f.action = (uint32_t)uniform_hash("shared", 6, 0);
-        f.cost = FLT_MAX;
-        f.probability = -1.f;
+			f.partial_prediction = 0.;
+			f.action = (uint32_t)uniform_hash("shared", 6, 0);
+			f.cost = FLT_MAX;
+			f.probability = -1.f;
 
-        ld->costs.push_back(f);
-      }
-    else
-      THROW("label type is not CB")
+			ld->costs.push_back(f);
+		}
 
 		return this;
 	}
@@ -541,7 +540,8 @@ public:
 		// fast ignore
 		// skip key + \0 + "
 		char* head = ctx.stream->src_ + length + 2;
-		if (head >= ctx.stream_end || *head != ':')
+
+		if (*head != ':')
 		{
 			ctx.error() << "Expected ':' found '" << *head << "'";
 			return nullptr;
@@ -556,9 +556,6 @@ public:
 		{
 			switch (*head)
 			{
-			case '\0':
-				ctx.error() << "Found EOF";
-				return nullptr;
 			case '"':
 			{
 				// skip strings
@@ -568,9 +565,6 @@ public:
 					head++;
 					switch (*head)
 					{
-					case '\0':
-						ctx.error() << "Found EOF";
-						return nullptr;
 					case '\\':
 						head++;
 						break;
@@ -609,12 +603,6 @@ public:
 
 		// skip key + \0 + ":
 		char* value = ctx.stream->src_ + length + 3;
-		if (value >= ctx.stream_end)
-		{
-			ctx.error() << "Found EOF";
-			return nullptr;
-		}
-
 		*value = '0';
 		value++;
 		memset(value, ' ', head - value - 1);
@@ -956,7 +944,6 @@ struct Context
   v_array<example*>* examples;
   example* ex;
   rapidjson::InsituStringStream* stream;
-  const char* stream_end;
 
   VW::example_factory_t example_factory;
   void* example_factory_context;
@@ -1073,7 +1060,7 @@ struct VWReaderHandler : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>, 
 {
 	Context<audit> ctx;
 
-	void init(vw* all, v_array<example*>* examples, rapidjson::InsituStringStream* stream, const char* stream_end, VW::example_factory_t example_factory, void* example_factory_context)
+	void init(vw* all, v_array<example*>* examples, rapidjson::InsituStringStream* stream, VW::example_factory_t example_factory, void* example_factory_context)
 	{
 		ctx.init(all);
 		ctx.examples = examples;
@@ -1081,7 +1068,6 @@ struct VWReaderHandler : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>, 
 		all->p->lp.default_label(&ctx.ex->l);
 
 		ctx.stream = stream;
-		ctx.stream_end = stream_end;
 		ctx.example_factory = example_factory;
 		ctx.example_factory_context = example_factory_context;
 	}
@@ -1130,7 +1116,7 @@ namespace VW
 		json_parser<audit>* parser = (json_parser<audit>*)all.p->jsonp;
 
 		VWReaderHandler<audit>& handler = parser->handler;
-		handler.init(&all, &examples, &ss, line + strlen(line), example_factory, ex_factory_context);
+		handler.init(&all, &examples, &ss, example_factory, ex_factory_context);
 
 		ParseResult result = parser->reader.template Parse<kParseInsituFlag, InsituStringStream, VWReaderHandler<audit>>(ss, handler);
 		if (!result.IsError())
@@ -1158,7 +1144,7 @@ namespace VW
       json_parser<audit> parser;
 
       VWReaderHandler<audit>& handler = parser.handler;
-      handler.init(&all, &examples, &ss, line + length, example_factory, ex_factory_context);
+      handler.init(&all, &examples, &ss, example_factory, ex_factory_context);
       handler.ctx.SetStartStateToDecisionService(data);
 
       ParseResult result = parser.reader.template Parse<kParseInsituFlag, InsituStringStream, VWReaderHandler<audit>>(ss, handler);

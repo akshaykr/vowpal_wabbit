@@ -23,31 +23,26 @@ pylibvw = Extension('pylibvw', sources=['python/pylibvw.cc'])
 
 def find_boost():
     """Find correct boost-python library information """
-    # find_library() has a tricky platform-dependent search behaviour
-    # it is not easy to instruct it to do search in a particular location on Linux at least
-    # skip find_library checks if python comes from conda 
-    # rely on conda to set up libboost_python.so link to what has been actually installed
-    skip_find_library = ('conda' in sys.version)
-
     if system == 'Linux':
         # use version suffix if present
         boost_lib = 'boost_python-py{v[0]}{v[1]}'.format(v=sys.version_info)
         if sys.version_info.major == 3:
-            for candidate in ['-py36', '-py35', '-py34', '3']:
-                boost_lib = 'boost_python{}'.format(candidate)
-                if find_library(boost_lib):
-                    break
-        if not find_library(boost_lib) or skip_find_library:
+            if find_library('boost_python-py36'):
+                boost_lib = 'boost_python-py36'
+            elif find_library('boost_python-py35'):
+                boost_lib = 'boost_python-py35'
+            elif find_library('boost_python-py34'):
+                boost_lib = 'boost_python-py34'
+        if not find_library(boost_lib):
             boost_lib = "boost_python"
     elif system == 'Darwin':
-	# For "brew"-installation of PythonBoost it's the lib /usr/local/lib/libboost_python27-mt resp. libboost_python36-mt
-        boost_lib = 'boost_python' + str(sys.version_info[0]) + str(sys.version_info[1]) + '-mt' 
+        boost_lib = 'boost_python-mt' if sys.version_info[0] == 2 else 'boost_python3-mt'
     elif system == 'Cygwin':
         boost_lib = 'boost_python-mt' if sys.version_info[0] == 2 else 'boost_python3-mt'
     else:
         raise Exception('Building on this system is not currently supported')
 
-    if not find_library(boost_lib) and not skip_find_library:
+    if not find_library(boost_lib):
         raise Exception('Could not find boost python library')
 
     return boost_lib
@@ -70,8 +65,8 @@ def prep():
         subprocess.check_call(['make', 'clean'], cwd=path.join(here, 'src', 'python'))
 
         # add explore
-        copytree(path.join(here, '..', 'rapidjson'), path.join(here, 'src', 'rapidjson'))
         copytree(path.join(here, '..', 'explore'), path.join(here, 'src', 'explore'))
+        copytree(path.join(here, '..', 'rapidjson'), path.join(here, 'src', 'rapidjson'))
 
         # add folders necessary to run 'make python'
         for folder in ['library', 'vowpalwabbit']:
