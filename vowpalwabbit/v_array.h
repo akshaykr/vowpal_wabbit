@@ -54,6 +54,7 @@ public:
     _end++;
   }
   T& operator[](size_t i) const { return _begin[i]; }
+  T& get(size_t i) const { return _begin[i]; }
   inline size_t size() const {return _end-_begin;}
   void resize(size_t length)
   { if ((size_t)(end_array-_begin) != length)
@@ -71,7 +72,7 @@ public:
     }
   }
 
-  void clear()
+  void erase()
   { if (++erase_count & erase_point)
     { resize(_end-_begin);
       erase_count = 0;
@@ -168,19 +169,19 @@ template<class T>
 inline v_array<T> v_init() { return {nullptr, nullptr, nullptr, 0};}
 
 template<class T> void copy_array(v_array<T>& dst, const v_array<T>& src)
-{ dst.clear();
+{ dst.erase();
   push_many(dst, src._begin, src.size());
 }
 
 // use to copy arrays of types with non-trivial copy constructors, such as shared_ptr
 template<class T> void copy_array_no_memcpy(v_array<T>& dst, const v_array<T>& src)
-{ dst.clear();
+{ dst.erase();
   for (T*item = src._begin; item != src._end; ++item)
     dst.push_back(*item);
 }
 
 template<class T> void copy_array(v_array<T>& dst, const v_array<T>& src, T(*copy_item)(T&))
-{ dst.clear();
+{ dst.erase();
   for (T*item = src._begin; item != src._end; ++item)
     dst.push_back(copy_item(*item));
 }

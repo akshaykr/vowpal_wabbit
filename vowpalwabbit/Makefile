@@ -27,11 +27,8 @@ allreduce_SOURCES = $(shell grep liballreduce_la_SOURCES Makefile.am | cut -d '=
 allreduce_OBJECTS = $(patsubst %.cc,%.o,$(allreduce_SOURCES))
 
 %.d:	%.cc config.h
-	$(CXX) -std=c++0x $(BOOST_INCLUDE) -I /usr -I ../rapidjson/include -I ../explore -MM $< > $@
-# Do NOT  make dependency files if clean has been called
-ifneq ($(MAKECMDGOALS),clean)
-  -include $(vw_DEPS)
-endif
+	$(CXX) -std=c++0x -I ../rapidjson/include -MM $< > $@
+-include $(vw_DEPS)
 
 %.o:	 %.cc  %.h
 	$(CXX) $(FLAGS) -c $< -o $@

@@ -228,6 +228,7 @@ namespace VW
 
                 // signal we're finished using an empty example
                 emptyExample = vw.GetOrCreateNativeExample();
+                validExamples.Add(emptyExample);
                 emptyExample.MakeEmpty(vw);
 
                 predictOrLearn(validExamples, validActionDependentFeatures, emptyActionDependentFeatures);
@@ -273,7 +274,10 @@ namespace VW
                 actionDependentFeatures,
                 (examples, _, __) =>
                 {
-                    vw.Learn(examples.ToList());
+                    foreach (var ex in examples)
+                    {
+                        vw.Learn(ex);
+                    }
                 },
                 index,
                 label);
@@ -318,8 +322,10 @@ namespace VW
                 actionDependentFeatures,
                 (examples, validActionDependentFeatures, emptyActionDependentFeatures) =>
                 {
-                    var ex_list = examples.ToList();
-                    vw.Learn(ex_list);
+                    foreach (var ex in examples)
+                    {
+                        vw.Learn(ex);
+                    }
 
                     predictions = VowpalWabbitMultiLine.GetPrediction(vw, examples, validActionDependentFeatures, emptyActionDependentFeatures);
                 },
@@ -367,8 +373,11 @@ namespace VW
                 actionDependentFeatures,
                 (examples, validActionDependentFeatures, emptyActionDependentFeatures) =>
                 {
-                    var ex_col = examples.ToList();
-                    vw.Predict(ex_col);
+                    foreach (var ex in examples)
+                    {
+                        vw.Predict(ex);
+                    }
+
                     predictions = VowpalWabbitMultiLine.GetPrediction(vw, examples, validActionDependentFeatures, emptyActionDependentFeatures);
                 },
                 index,

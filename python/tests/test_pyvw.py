@@ -81,22 +81,18 @@ def test_multiclass_prediction_type():
 
 def test_prob_prediction_type():
     model = vw(loss_function='logistic', csoaa_ldf='mc', probabilities=True, quiet=True)
-    multi_ex = [model.example('1:0.2 | a b c'), model.example('2:0.8  | a b c')]
-    model.learn(multi_ex)
+    model.learn('1 | a b c')
     assert model.get_prediction_type() == model.pPROB
-    multi_ex = [model.example('1 | a b c'), model.example('2 | a b c')]
-    prediction = model.predict(multi_ex)
+    prediction = model.predict(' | a b c')
     assert isinstance(prediction, float)
     del model
 
 
 def test_action_scores_prediction_type():
     model = vw(loss_function='logistic', csoaa_ldf='m', quiet=True)
-    multi_ex = [model.example('1:1 | a b c'), model.example('2:-1  | a b c')]
-    model.learn(multi_ex)
+    model.learn('1 | a b c')
     assert model.get_prediction_type() == model.pMULTICLASS
-    multi_ex = [model.example('1 | a b c'), model.example('2 | a b c')]
-    prediction = model.predict(multi_ex)
+    prediction = model.predict(' | a b c')
     assert isinstance(prediction, int)
     del model
 
@@ -142,12 +138,3 @@ def test_regressor_args():
     # clean up
     os.remove('{}.cache'.format(data_file))
     os.remove('tmp.model')
-
-
-def test_keys_with_list_of_values():
-    # No exception in creating and executing model with a key/list pair
-    model = vw(quiet=True, q=["fa", "fb"])
-    model.learn('1 | a b c')
-    prediction = model.predict(' | a b c')
-    assert isinstance(prediction, float)
-    del model

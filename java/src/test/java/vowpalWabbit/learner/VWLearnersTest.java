@@ -39,8 +39,7 @@ public class VWLearnersTest extends VWTestHelper {
     public void testBadVWArgs() {
         final String args = "--BAD_FEATURE___ounq24tjnasdf8h";
         thrown.expect(IllegalArgumentException.class);
-	thrown.expectMessage("unrecognised option '--BAD_FEATURE___ounq24tjnasdf8h'");
-	VWLearners.create(args + " --quiet");
+        VWLearners.create(args + " --quiet");
     }
 
     @Test

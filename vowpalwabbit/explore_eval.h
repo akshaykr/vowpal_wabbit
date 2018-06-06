@@ -5,4 +5,5 @@ license as described in the file LICENSE.
 */
 #pragma once
 
-LEARNER::base_learner* explore_eval_setup(arguments& arg);
+LEARNER::base_learner* explore_eval_setup(vw& all);
+

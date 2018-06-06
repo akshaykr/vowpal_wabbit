@@ -8,8 +8,8 @@ license as described in the file LICENSE.
 
 namespace EntityRelationTask
 {
-void initialize(Search::search&, size_t&, arguments&);
+void initialize(Search::search&, size_t&, po::variables_map&);
 void finish(Search::search&);
-void run(Search::search&, multi_ex&);
+void run(Search::search&, std::vector<example*>&);
 extern Search::search_task task;
 }

@@ -6,14 +6,11 @@ namespace ACTION_SCORE
 {
 
 void print_action_score(int f, v_array<action_score>& a_s, v_array<char>&)
-{
-  if (f >= 0)
-  {
-    std::stringstream ss;
+{ if (f >= 0)
+  { std::stringstream ss;
 
     for (size_t i = 0; i < a_s.size(); i++)
-    {
-      if (i > 0)
+    { if (i > 0)
         ss << ',';
       ss << a_s[i].action << ':' << a_s[i].score;
     }
@@ -26,8 +23,7 @@ void print_action_score(int f, v_array<action_score>& a_s, v_array<char>&)
 }
 
 void delete_action_scores(void* v)
-{
-  v_array<action_score>* cs = (v_array<action_score>*)v;
+{ v_array<action_score>* cs = (v_array<action_score>*)v;
   cs->delete_v();
 }
 
