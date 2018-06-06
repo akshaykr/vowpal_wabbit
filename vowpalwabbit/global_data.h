@@ -12,6 +12,7 @@ license as described in the file LICENSE.
 #include <cfloat>
 #include <stdint.h>
 #include <cstdio>
+#include <inttypes.h>
 #include <boost/program_options.hpp>
 namespace po = boost::program_options;
 
@@ -27,11 +28,13 @@ namespace po = boost::program_options;
 #include <time.h>
 #include "hash.h"
 #include "crossplat_compat.h"
+#include "error_reporting.h"
+#include "parser_helper.h"
 
 struct version_struct
-{ int major;
-  int minor;
-  int rev;
+{ int32_t major;
+  int32_t minor;
+  int32_t rev;
   version_struct(int maj = 0, int min = 0, int rv = 0)
   { major = maj;
     minor = min;
@@ -109,7 +112,7 @@ struct version_struct
   void from_string(const char* str)
   {
 #ifdef _WIN32
-    sscanf_s(str, "%d.%d.%d", &major, &minor, &rev);
+    sscanf_s(str,"%d.%d.%d",&major,&minor,&rev);
 #else
     std::sscanf(str,"%d.%d.%d",&major,&minor,&rev);
 #endif
@@ -232,7 +235,7 @@ struct shared_data
   bool report_multiclass_log_loss;
   double multiclass_log_loss;
   double holdout_multiclass_log_loss;
-  
+
   bool  is_more_than_two_labels_observed;
   float first_observed_label;
   float second_observed_label;
@@ -256,7 +259,7 @@ struct shared_data
 
   void update(bool test_example, bool labeled_example, float loss, float weight, size_t num_features)
   { t += weight;
-    if(test_example)
+    if(test_example && labeled_example)
     { weighted_holdout_examples += weight;//test weight seen
       weighted_holdout_examples_since_last_dump += weight;
       weighted_holdout_examples_since_last_pass += weight;
@@ -421,30 +424,6 @@ namespace label_type
 };
 }
 
-typedef void(*trace_message_t)(void *context, const std::string&);
-
-// TODO: change to virtual class
-
-// invoke trace_listener when << endl is encountered.
-class vw_ostream : public std::ostream
-{
-	class vw_streambuf : public std::stringbuf
-	{
-		vw_ostream& parent;
-	public:
-		vw_streambuf(vw_ostream& str);
-
-		virtual int sync();
-	};
-	vw_streambuf buf;
-
-public:
-	vw_ostream();
-
-	void* trace_context;
-	trace_message_t trace_listener;
-};
-
 struct vw
 { shared_data* sd;
 
@@ -458,10 +437,15 @@ struct vw
   AllReduce* all_reduce;
 
   LEARNER::base_learner* l;//the top level learner
-  LEARNER::base_learner* scorer;//a scoring function
-  LEARNER::base_learner* cost_sensitive;//a cost sensitive learning algorithm.
+  LEARNER::single_learner* scorer;//a scoring function
+  LEARNER::base_learner* cost_sensitive;//a cost sensitive learning algorithm.  can be single or multi line learner
 
-  void learn(example*);
+  void learn(example&);
+  void learn(multi_ex&);
+  void predict(example&);
+  void predict(multi_ex&);
+  void finish_example(example&);
+  void finish_example(multi_ex&);
 
   void (*set_minmax)(shared_data* sd, float label);
 
@@ -469,6 +453,8 @@ struct vw
 
   uint32_t num_bits; // log_2 of the number of features.
   bool default_bits;
+
+  uint32_t hash_seed;
 
   std::string data_filename; // was vm["data"]
 
@@ -490,11 +476,7 @@ struct vw
   double normalized_sum_norm_x;
   bool vw_is_main;  // true if vw is executable; false in library mode
 
-  po::options_description opts;
-  po::options_description* new_opts;
-  po::variables_map vm;
-  std::stringstream* file_options;
-  std::vector<std::string> args;
+  arguments opts_n_args;
 
   void* /*Search::search*/ searchstr;
 
@@ -517,7 +499,7 @@ struct vw
   size_t passes_complete;
   uint64_t parse_mask; // 1 << num_bits -1
   bool permutations; // if true - permutations of features generated instead of simple combinations. false by default
-  v_array<v_string> interactions; // interactions of namespaces to cross.
+  std::vector<std::string> interactions;
   std::vector<std::string> pairs; // pairs of features to cross.
   std::vector<std::string> triples; // triples of features to cross.
   bool ignore_some;
@@ -545,7 +527,6 @@ struct vw
   bool training;//Should I train if lable data is available?
   bool active;
   bool adaptive;//Should I use adaptive individual learning rates?
-  bool adax;//Adaptive individual learning rates with x^2 instead of g^2x^2
   bool normalized_updates; //Should every feature be normalized
   bool invariant_updates; //Should we use importance aware/safe updates
   uint64_t random_seed;
@@ -572,7 +553,7 @@ struct vw
 
   size_t length () { return ((size_t)1) << num_bits; };
 
-  v_array<LEARNER::base_learner* (*)(vw&)> reduction_stack;
+  v_array<LEARNER::base_learner* (*)(arguments&)> reduction_stack;
 
   //Prediction output
   v_array<int> final_prediction_sink; // set to send global predictions to.
@@ -595,7 +576,7 @@ struct vw
   std::string final_regressor_name;
 
   parameters weights;
-  
+
   size_t max_examples; // for TLC
 
   bool hash_inv;
@@ -609,12 +590,11 @@ struct vw
 
   label_type::label_type_t label_type;
 
-  vw_ostream trace_message;
-
   vw();
 
-  // ostream doesn't have copy constructor and the python library used some boost code which code potentially invoke this
   vw(const vw &);
+  //private://disable copying.
+  //vw& operator=(const vw& );
 };
 
 void print_result(int f, float res, float weight, v_array<char> tag);
@@ -624,23 +604,3 @@ void get_prediction(int sock, float& res, float& weight);
 void compile_gram(std::vector<std::string> grams, uint32_t* dest, char* descriptor, bool quiet);
 void compile_limits(std::vector<std::string> limits, uint32_t* dest, bool quiet);
 int print_tag(std::stringstream& ss, v_array<char> tag);
-void add_options(vw& all, po::options_description& opts);
-inline po::options_description_easy_init new_options(vw& all, std::string name = "\0")
-{ all.new_opts = new po::options_description(name);
-  return all.new_opts->add_options();
-}
-bool no_new_options(vw& all);
-bool missing_option(vw& all, bool keep, const char* name, const char* description);
-template <class T> bool missing_option(vw& all, const char* name, const char* description)
-{ new_options(all)(name, po::value<T>(), description);
-  return no_new_options(all);
-}
-template <class T, bool keep> bool missing_option(vw& all, const char* name,
-    const char* description)
-{ if (missing_option<T>(all, name, description))
-    return true;
-  if (keep)
-    *all.file_options << " --" << name << " " << all.vm[name].as<T>();
-  return false;
-}
-void add_options(vw& all);
